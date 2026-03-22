@@ -8,15 +8,15 @@ from collections import deque
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QGridLayout, QLabel, QComboBox, QPushButton, 
                              QLineEdit, QFileDialog, QGroupBox, QMessageBox)
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
 import pyqtgraph as pg
 
 # ---------------------------------------------------------
 # 数据接收与解析线程 (后台)
 # ---------------------------------------------------------
 class SerialReaderThread(QThread):
-    # 定义信号：将解析后的物理数据发送给主UI线程
-    data_received = pyqtSignal(float, float, float, float, float, float, float, float)
+    # 更新信号：增加绿光、红光、红外光、温度、当前模式字符串、丢包率
+    data_received = pyqtSignal(float, float, float, float, float, float, float, float, float, float, float, str, float)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, port, baudrate):
@@ -25,6 +25,9 @@ class SerialReaderThread(QThread):
         self.baudrate = baudrate
         self.serial_port = None
         self.is_running = False
+        # 丢包率统计
+        self.total_packets = 0
+        self.invalid_packets = 0
 
     def run(self):
         try:
@@ -36,23 +39,29 @@ class SerialReaderThread(QThread):
                 if self.serial_port.in_waiting:
                     buffer.extend(self.serial_port.read(self.serial_port.in_waiting))
                     
-                    while len(buffer) >= 19:
+                    # 匹配新版 21 字节帧长度
+                    while len(buffer) >= 21:
                         if buffer[0] == 0xAA and buffer[1] == 0xBB:
-                            packet = buffer[:19]
-                            
-                            if packet[18] == 0xCC:
+                            packet = buffer[:21]
+                            self.total_packets += 1  # 检测到帧头，计数+1
+
+                            # 帧尾在索引 20
+                            if packet[20] == 0xCC:
                                 calc_xor = 0
-                                for b in packet[2:17]:
+                                # 校验位在索引 19，参与校验的是索引 2 到 18 (共17字节)
+                                for b in packet[2:19]:
                                     calc_xor ^= b
-                                
-                                if calc_xor == packet[17]:
+
+                                if calc_xor == packet[19]:
                                     self.parse_packet(packet)
                                 else:
+                                    self.invalid_packets += 1
                                     print("XOR校验失败")
                             else:
+                                self.invalid_packets += 1
                                 print("帧尾校验失败")
-                            
-                            del buffer[:19]
+
+                            del buffer[:21]
                         else:
                             del buffer[0:1]
                 else:
@@ -66,9 +75,9 @@ class SerialReaderThread(QThread):
         range_ppg_num = -2048.0 / 262144.0
         range_acc_num = 4.0 / 32767.0
 
-        # --- 1. ADC 桥压转换 (转换为 mV) ---
+        # --- 1. ADC 桥压转换 (保持不变) ---
         num_Ut2 = (data[2] << 16) + (data[3] << 8)
-        Ut2 = ((num_Ut2 / 8388608.0) * 2.5) * 1000.0  # 乘 1000 转换为 mV
+        Ut2 = ((num_Ut2 / 8388608.0) * 2.5) * 1000.0
 
         num_Ut1 = (data[4] << 16) + (data[5] << 8)
         Ut1 = ((num_Ut1 / 8388608.0) * 2.5) * 1000.0
@@ -79,7 +88,7 @@ class SerialReaderThread(QThread):
         num_Uc1 = (data[8] << 16) + (data[9] << 8)
         Uc1 = ((num_Uc1 / 8388608.0) * 2.5) * 1000.0
 
-        # --- 2. MIMU 加速度计算 ---
+        # --- 2. MIMU 加速度计算 (保持不变) ---
         num_Accx = data[10] << 8
         Accx = -(num_Accx - 65536) * range_acc_num if num_Accx >= 32768 else -num_Accx * range_acc_num
 
@@ -89,15 +98,47 @@ class SerialReaderThread(QThread):
         num_Accz = data[12] << 8
         Accz = (num_Accz - 65536) * range_acc_num if num_Accz >= 32768 else num_Accz * range_acc_num
 
-        # --- 3. PPG 处理部分 ---
-        raw_sum = (data[13] << 16) + (data[14] << 8) + data[15]
-        count = data[16]
-        
-        if count == 0: count = 1
-        raw_green = raw_sum / count
-        ppg1_1 = raw_green * range_ppg_num + 1000.0
+        # --- 3. 模式识别与多波长 PPG/温度 解算 ---
+        # 根据第18字节标识位判断工作模式
+        is_hr_mode = (data[18] == 0xFF)
+        mode_str = "心率模式 (单绿光)" if is_hr_mode else "血氧模式 (红光+红外)"
 
-        self.data_received.emit(Uc1, Uc2, Ut1, Ut2, Accx, Accy, Accz, ppg1_1)
+        ppg_green = 0.0
+        ppg_red = 0.0
+        ppg_ir = 0.0
+        temp_val = 0.0
+
+        if is_hr_mode:
+            # 心率模式解算：3字节绿光 + 1字节Count
+            raw_sum = (data[13] << 16) + (data[14] << 8) + data[15]
+            count = data[16] if data[16] != 0 else 1
+            raw_green = raw_sum / count
+            ppg_green = raw_green * range_ppg_num + 1000.0
+        else:
+            # 血氧模式解算：2字节Red + 2字节IR
+            raw_red = (data[13] << 8) | data[14]
+            raw_ir = (data[15] << 8) | data[16]
+            
+            # 使用与绿光一致的缩放比例进行物理转换
+            ppg_red = raw_red * range_ppg_num + 1000.0
+            ppg_ir = raw_ir * range_ppg_num + 1000.0
+
+            # 温度数据解算 (有符号整数部分 + 无符号小数部分)
+            die_temp_int = data[17]
+            if die_temp_int > 127:
+                die_temp_int -= 256  # 补码转有符号
+            die_temp_frac = data[18]
+            
+            # 代入温度补偿公式 (+2.4为代码给出的LED温升预估补偿)
+            temp_val = die_temp_int + (die_temp_frac * 0.0625) + 2.4
+
+        # 计算丢包率
+        if self.total_packets > 0:
+            loss_rate = (self.invalid_packets / self.total_packets) * 100
+        else:
+            loss_rate = 0.0
+
+        self.data_received.emit(Uc1, Uc2, Ut1, Ut2, Accx, Accy, Accz, ppg_green, ppg_red, ppg_ir, temp_val, mode_str, loss_rate)
 
     def stop(self):
         self.is_running = False
@@ -113,12 +154,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("多传感器采集系统 - 数据实时监测与存储")
-        self.resize(1300, 900)
+        self.resize(1400, 950)
 
         self.serial_thread = None
         self.is_recording = False
         self.csv_file = None
         self.csv_writer = None
+        self.recording_start_time = None  # 记录开始时间
+
+        # 采样率统计变量
+        self.packet_count = 0 
 
         self.plot_pts = 1000
         self.data_Uc1 = deque(maxlen=self.plot_pts)
@@ -128,13 +173,24 @@ class MainWindow(QMainWindow):
         self.data_Accx = deque(maxlen=self.plot_pts)
         self.data_Accy = deque(maxlen=self.plot_pts)
         self.data_Accz = deque(maxlen=self.plot_pts)
-        self.data_ppg = deque(maxlen=self.plot_pts)
+        
+        # 扩展 PPG 和 温度 存储
+        self.data_ppg_g = deque(maxlen=self.plot_pts)
+        self.data_ppg_r = deque(maxlen=self.plot_pts)
+        self.data_ppg_ir = deque(maxlen=self.plot_pts)
+        self.data_temp = deque(maxlen=self.plot_pts)
 
         self.init_ui()
 
+        # 图表刷新定时器
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_plots)
         self.timer.start(50)
+
+        # 采样率计算定时器 (1秒刷新1次)
+        self.rate_timer = QTimer()
+        self.rate_timer.timeout.connect(self.update_sample_rate)
+        self.rate_timer.start(1000)
 
     def init_ui(self):
         main_widget = QWidget()
@@ -146,6 +202,23 @@ class MainWindow(QMainWindow):
         control_layout = QVBoxLayout()
         control_layout.setContentsMargins(10, 10, 10, 10)
         
+        # 1. 状态监控看板 (新增)
+        status_group = QGroupBox("实时状态监控")
+        status_vbox = QVBoxLayout()
+
+        self.lbl_mode = QLabel("当前模式: 等待数据...")
+        self.lbl_mode.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 14px;")
+        self.lbl_rate = QLabel("采样率: 0 Hz")
+        self.lbl_rate.setStyleSheet("font-weight: bold; color: #FF9800; font-size: 14px;")
+        self.lbl_loss = QLabel("丢包率: 0.00%")
+        self.lbl_loss.setStyleSheet("font-weight: bold; color: #F44336; font-size: 14px;")
+        
+        status_vbox.addWidget(self.lbl_mode)
+        status_vbox.addWidget(self.lbl_rate)
+        status_vbox.addWidget(self.lbl_loss)
+        status_group.setLayout(status_vbox)
+
+        # 2. 通信设置
         serial_group = QGroupBox("通信设置")
         serial_vbox = QVBoxLayout()
         
@@ -169,6 +242,7 @@ class MainWindow(QMainWindow):
         serial_vbox.addWidget(self.btn_connect)
         serial_group.setLayout(serial_vbox)
 
+        # 3. 数据记录
         record_group = QGroupBox("数据记录")
         record_vbox = QVBoxLayout()
         
@@ -190,34 +264,59 @@ class MainWindow(QMainWindow):
         record_vbox.addWidget(self.btn_record)
         record_group.setLayout(record_vbox)
 
+        control_layout.addWidget(status_group)
         control_layout.addWidget(serial_group)
         control_layout.addWidget(record_group)
         control_layout.addStretch()
 
         # --- 右侧波形显示面板 ---
         plot_layout = QVBoxLayout()
-        
+
         pg.setConfigOption('background', 'w')
         pg.setConfigOption('foreground', 'k')
 
-        # 1. PPG 绘图
-        self.plot_w_ppg = pg.PlotWidget(title="PPG 绿光信号 (ppg1_1)")
-        self.plot_w_ppg.showGrid(x=True, y=True)
-        self.curve_ppg = self.plot_w_ppg.plot(pen=pg.mkPen('g', width=2))
-        plot_layout.addWidget(self.plot_w_ppg, 2) # 分配空间权重
+        # 1. PPG 绘图区域 (左右分栏)
+        ppg_widget = QWidget()
+        ppg_layout = QHBoxLayout()
+        ppg_layout.setContentsMargins(0, 0, 0, 0)
+        ppg_widget.setLayout(ppg_layout)
 
-        # 2. ADC 热膜绘图 (2x2 网格)
+        # 左侧：绿光 PPG
+        self.plot_w_ppg_g = pg.PlotWidget(title="PPG 绿光 (Green)")
+        self.plot_w_ppg_g.showGrid(x=True, y=True)
+        self.curve_ppg_g = self.plot_w_ppg_g.plot(pen=pg.mkPen('g', width=2))
+        ppg_layout.addWidget(self.plot_w_ppg_g)
+
+        # 右侧：红光和红外光 (上下排列)
+        ppg_right_widget = QWidget()
+        ppg_right_layout = QVBoxLayout()
+        ppg_right_layout.setContentsMargins(0, 0, 0, 0)
+        ppg_right_widget.setLayout(ppg_right_layout)
+
+        self.plot_w_ppg_r = pg.PlotWidget(title="PPG 红光 (Red)")
+        self.plot_w_ppg_r.showGrid(x=True, y=True)
+        self.curve_ppg_r = self.plot_w_ppg_r.plot(pen=pg.mkPen('r', width=2))
+        ppg_right_layout.addWidget(self.plot_w_ppg_r)
+
+        self.plot_w_ppg_ir = pg.PlotWidget(title="PPG 红外光 (IR)")
+        self.plot_w_ppg_ir.showGrid(x=True, y=True)
+        self.curve_ppg_ir = self.plot_w_ppg_ir.plot(pen=pg.mkPen('b', width=2))
+        ppg_right_layout.addWidget(self.plot_w_ppg_ir)
+
+        ppg_layout.addWidget(ppg_right_widget)
+        plot_layout.addWidget(ppg_widget, 2)
+
+        # 2. 温度监控绘图
+        self.plot_w_temp = pg.PlotWidget(title="芯片结温实时监控 (℃)")
+        self.plot_w_temp.showGrid(x=True, y=True)
+        self.curve_temp = self.plot_w_temp.plot(pen=pg.mkPen(color=(200, 100, 0), width=2))
+        plot_layout.addWidget(self.plot_w_temp, 1)
+
+        # 3. ADC 热膜绘图 (2x2 网格，桥顶在上，桥中在下)
         adc_widget = QWidget()
         adc_layout = QGridLayout()
+        adc_layout.setContentsMargins(0, 0, 0, 0)
         adc_widget.setLayout(adc_layout)
-
-        self.plot_w_uc1 = pg.PlotWidget(title="热膜桥中1 (Uc1) - mV")
-        self.plot_w_uc1.showGrid(x=True, y=True)
-        self.curve_Uc1 = self.plot_w_uc1.plot(pen=pg.mkPen('r', width=1.5))
-
-        self.plot_w_uc2 = pg.PlotWidget(title="热膜桥中2 (Uc2) - mV")
-        self.plot_w_uc2.showGrid(x=True, y=True)
-        self.curve_Uc2 = self.plot_w_uc2.plot(pen=pg.mkPen('b', width=1.5))
 
         self.plot_w_ut1 = pg.PlotWidget(title="热膜桥顶1 (Ut1) - mV")
         self.plot_w_ut1.showGrid(x=True, y=True)
@@ -227,14 +326,22 @@ class MainWindow(QMainWindow):
         self.plot_w_ut2.showGrid(x=True, y=True)
         self.curve_Ut2 = self.plot_w_ut2.plot(pen=pg.mkPen('m', width=1.5))
 
-        adc_layout.addWidget(self.plot_w_uc1, 0, 0)
-        adc_layout.addWidget(self.plot_w_uc2, 0, 1)
-        adc_layout.addWidget(self.plot_w_ut1, 1, 0)
-        adc_layout.addWidget(self.plot_w_ut2, 1, 1)
-        
-        plot_layout.addWidget(adc_widget, 4) # 网格图表占比更大
+        self.plot_w_uc1 = pg.PlotWidget(title="热膜桥中1 (Uc1) - mV")
+        self.plot_w_uc1.showGrid(x=True, y=True)
+        self.curve_Uc1 = self.plot_w_uc1.plot(pen=pg.mkPen('r', width=1.5))
 
-        # 3. MIMU 三轴加速绘图
+        self.plot_w_uc2 = pg.PlotWidget(title="热膜桥中2 (Uc2) - mV")
+        self.plot_w_uc2.showGrid(x=True, y=True)
+        self.curve_Uc2 = self.plot_w_uc2.plot(pen=pg.mkPen('b', width=1.5))
+
+        adc_layout.addWidget(self.plot_w_ut1, 0, 0)
+        adc_layout.addWidget(self.plot_w_ut2, 0, 1)
+        adc_layout.addWidget(self.plot_w_uc1, 1, 0)
+        adc_layout.addWidget(self.plot_w_uc2, 1, 1)
+        
+        plot_layout.addWidget(adc_widget, 3) 
+
+        # 4. MIMU 三轴加速绘图
         self.plot_w_acc = pg.PlotWidget(title="三轴加速度计 (Acc_x, Acc_y, Acc_z)")
         self.plot_w_acc.showGrid(x=True, y=True)
         self.plot_w_acc.addLegend()
@@ -264,6 +371,9 @@ class MainWindow(QMainWindow):
             self.btn_connect.setStyleSheet("")
             self.cb_ports.setEnabled(True)
             self.cb_baudrate.setEnabled(True)
+            self.lbl_mode.setText("当前模式: 离线")
+            self.lbl_rate.setText("采样率: 0 Hz")
+            self.lbl_loss.setText("丢包率: 0.00%")
             
             if self.is_recording:
                 self.toggle_record()
@@ -310,14 +420,23 @@ class MainWindow(QMainWindow):
             try:
                 self.csv_file = open(filepath, 'w', newline='')
                 self.csv_writer = csv.writer(self.csv_file)
-                self.csv_writer.writerow(["Time", "Uc1(mV)", "Uc2(mV)", "Ut1(mV)", "Ut2(mV)", "AccX", "AccY", "AccZ", "PPG1_1"])
+                # 修改CSV表头，时间改为相对时间(s)
+                self.csv_writer.writerow(["Time(s)", "Mode", "Uc1(mV)", "Uc2(mV)", "Ut1(mV)", "Ut2(mV)",
+                                          "AccX", "AccY", "AccZ", "PPG_Green", "PPG_Red", "PPG_IR", "Temp(C)"])
+                # 记录开始时间
+                self.recording_start_time = time.time()
                 self.is_recording = True
                 self.btn_record.setText("停止记录")
                 self.btn_record.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
             except Exception as e:
                 QMessageBox.critical(self, "文件错误", f"无法创建文件: {e}")
 
-    def handle_new_data(self, Uc1, Uc2, Ut1, Ut2, Accx, Accy, Accz, ppg1_1):
+    def handle_new_data(self, Uc1, Uc2, Ut1, Ut2, Accx, Accy, Accz, ppg_g, ppg_r, ppg_ir, temp, mode_str, loss_rate):
+        # 更新采样统计计数与 UI 标签
+        self.packet_count += 1
+        self.lbl_mode.setText(f"当前模式: {mode_str}")
+        self.lbl_loss.setText(f"丢包率: {loss_rate:.2f}%")
+
         self.data_Uc1.append(Uc1)
         self.data_Uc2.append(Uc2)
         self.data_Ut1.append(Ut1)
@@ -325,20 +444,39 @@ class MainWindow(QMainWindow):
         self.data_Accx.append(Accx)
         self.data_Accy.append(Accy)
         self.data_Accz.append(Accz)
-        self.data_ppg.append(ppg1_1)
+        
+        # 追加扩展数据
+        self.data_ppg_g.append(ppg_g)
+        self.data_ppg_r.append(ppg_r)
+        self.data_ppg_ir.append(ppg_ir)
+        self.data_temp.append(temp)
 
         if self.is_recording and self.csv_writer:
-            curr_time = time.strftime("%H:%M:%S.%f")[:-3]
-            self.csv_writer.writerow([curr_time, round(Uc1, 5), round(Uc2, 5), round(Ut1, 5), 
-                                      round(Ut2, 5), round(Accx, 5), round(Accy, 5), 
-                                      round(Accz, 5), round(ppg1_1, 5)])
-            # 【关键修复】: 强制刷新缓冲区，确保实时写入磁盘
+            # 计算相对时间（秒，精确到毫秒）
+            elapsed_time = round(time.time() - self.recording_start_time, 3)
+            # 记录数据时新增当前模式标识和所有分离的光学与温度数据
+            self.csv_writer.writerow([elapsed_time, mode_str, 
+                                      round(Uc1, 5), round(Uc2, 5), round(Ut1, 5), round(Ut2, 5), 
+                                      round(Accx, 5), round(Accy, 5), round(Accz, 5), 
+                                      round(ppg_g, 5), round(ppg_r, 5), round(ppg_ir, 5), round(temp, 2)])
             self.csv_file.flush() 
 
+    def update_sample_rate(self):
+        # 计算1秒内收到的包数并重置
+        if self.serial_thread and self.serial_thread.is_running:
+            self.lbl_rate.setText(f"采样率: {self.packet_count} Hz")
+            self.packet_count = 0
+
     def update_plots(self):
-        if len(self.data_ppg) > 0:
-            self.curve_ppg.setData(list(self.data_ppg))
+        if len(self.data_Uc1) > 0:
+            # 渲染多波长 PPG
+            self.curve_ppg_g.setData(list(self.data_ppg_g))
+            self.curve_ppg_r.setData(list(self.data_ppg_r))
+            self.curve_ppg_ir.setData(list(self.data_ppg_ir))
             
+            # 渲染温度
+            self.curve_temp.setData(list(self.data_temp))
+
             self.curve_Uc1.setData(list(self.data_Uc1))
             self.curve_Uc2.setData(list(self.data_Uc2))
             self.curve_Ut1.setData(list(self.data_Ut1))
