@@ -139,14 +139,8 @@ classdef OnlineHeartRateSolver < handle
             if size(accy_col, 2) > 1, accy_col = accy_col(:); end
             if size(accz_col, 2) > 1, accz_col = accz_col(:); end
 
-            % 处理离群值（使用安全的填充方式）
-            try
-                ppg_cleaned = filloutliers(ppg_col, 'previous', 'mean');
-            catch
-                ppg_cleaned = ppg_col;  % 如果filloutliers失败，使用原始数据
-            end
-
-            ppg_ori   = resample(ppg_cleaned, Fs, Fs_Ori);
+            % 直接重采样，不使用filloutliers（可能导致维度问题）
+            ppg_ori   = resample(ppg_col,   Fs, Fs_Ori);
             hotf1_ori = resample(hotf1_col, Fs, Fs_Ori);
             hotf2_ori = resample(hotf2_col, Fs, Fs_Ori);
             hotf3_ori = resample(hotf3_col, Fs, Fs_Ori);
