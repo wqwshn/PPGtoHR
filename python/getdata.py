@@ -21,12 +21,14 @@ class SerialReaderThread(QThread):
     data_received = pyqtSignal(float, float, float, float, float, float, float, float, float, float, float, str, float)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, port, baudrate):
+    def __init__(self, port, baudrate, data_buffer, data_lock):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self.serial_port = None
         self.is_running = False
+        self.data_buffer = data_buffer  # 新增
+        self.data_lock = data_lock        # 新增
         # 丢包率统计
         self.total_packets = 0
         self.invalid_packets = 0
@@ -133,6 +135,13 @@ class SerialReaderThread(QThread):
             
             # 代入温度补偿公式 (+2.4为代码给出的LED温升预估补偿)
             temp_val = die_temp_int + (die_temp_frac * 0.0625) + 2.4
+
+        # 将MATLAB需要的数据写入DataBuffer
+        # 格式: (PPG, HF1, HF2, HF3, ACCx, ACCy, ACCz)
+        # HF3置零，使用Ut1和Ut2作为HF1和HF2
+        matlab_data = (ppg_green, Ut1, Ut2, 0.0, Accx, Accy, Accz)
+        with self.data_lock:
+            self.data_buffer.append(matlab_data)
 
         # 计算丢包率
         if self.total_packets > 0:
@@ -409,7 +418,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "请先选择串口！")
                 return
             
-            self.serial_thread = SerialReaderThread(port, baud)
+            self.serial_thread = SerialReaderThread(port, baud, self.data_buffer, self.data_lock)
             self.serial_thread.data_received.connect(self.handle_new_data)
             self.serial_thread.error_occurred.connect(self.handle_serial_error)
             self.serial_thread.start()
