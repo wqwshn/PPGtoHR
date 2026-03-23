@@ -183,3 +183,83 @@ class MatlabWorkerThread(QThread):
             raise exception[0]
 
         return {'results': result[0], 'is_ready': is_ready[0]}
+
+    def _process_step(self):
+        """主计算流程入口，由定时器每秒触发"""
+        if not self.is_calculating:
+            return
+
+        if self.solver is None:
+            return
+
+        # 1. 获取数据
+        try:
+            mat_data = self._get_data_for_matlab()
+            if mat_data is None:
+                self.status_changed.emit("数据收集中...")
+                return
+        except Exception as e:
+            self.error_occurred.emit(f"数据获取失败: {str(e)}")
+            return
+
+        # 2. 调用MATLAB（带超时保护）
+        try:
+            result = self._process_step_with_timeout(mat_data, timeout=2.0)
+        except TimeoutError:
+            self.timeout_count += 1
+            if self.timeout_count >= 3:
+                self.error_occurred.emit("MATLAB计算连续超时，尝试重启引擎")
+                self._restart_matlab_engine()
+            return
+        except Exception as e:
+            self.error_occurred.emit(f"MATLAB计算异常: {str(e)}")
+            return
+
+        # 3. 解析结果并发送信号
+        if result is not None and result.get('is_ready', False):
+            hr_results = result['results']
+            try:
+                # MATLAB Engine返回的标量可直接访问
+                hr_hf = float(hr_results['Final_HR_HF']) * 60  # Hz → BPM
+                hr_acc = float(hr_results['Final_HR_ACC']) * 60
+                is_motion = bool(hr_results['Motion_Flag_HF_Path'])
+
+                # 发送信号
+                self.hr_ready.emit(hr_hf, hr_acc, is_motion)
+                self.timeout_count = 0  # 重置超时计数
+            except (KeyError, TypeError, ValueError) as e:
+                self.error_occurred.emit(f"结果解析失败: {str(e)}")
+
+    def _restart_matlab_engine(self):
+        """重启MATLAB Engine和求解器"""
+        try:
+            # 尝试优雅关闭
+            if self.eng is not None:
+                self.eng.quit()
+        except:
+            pass  # 忽略关闭错误
+
+        try:
+            # 重新启动
+            import matlab.engine
+            self.eng = matlab.engine.start_matlab()
+
+            # 设置工作路径
+            matlab_path = r'D:\data\PPG_HeartRate\Algorithm\ALL\matlab'
+            self.eng.cd(matlab_path)
+
+            # 重新初始化求解器
+            self.init_solver(self.current_scenario)
+            self.timeout_count = 0
+            self.status_changed.emit("MATLAB引擎已重启")
+        except Exception as e:
+            self.error_occurred.emit(f"MATLAB重启失败: {str(e)}")
+
+    def cleanup(self):
+        """清理资源，在退出时调用"""
+        self.stop_calculation()
+        try:
+            if self.eng is not None:
+                self.eng.quit()
+        except:
+            pass
