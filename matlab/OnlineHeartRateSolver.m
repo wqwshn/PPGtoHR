@@ -122,16 +122,31 @@ classdef OnlineHeartRateSolver < handle
             
             % 1. 独立重采样与滤波 (保证即便 Fs_Target 不同也能完美复刻)
             % 确保数据是列向量格式
-            ppg_col   = reshape(raw_win(:, 1), [], 1);
-            hotf1_col = reshape(raw_win(:, 2), [], 1);
-            hotf2_col = reshape(raw_win(:, 3), [], 1);
-            hotf3_col = reshape(raw_win(:, 4), [], 1);
-            accx_col  = reshape(raw_win(:, 5), [], 1);
-            accy_col  = reshape(raw_win(:, 6), [], 1);
-            accz_col  = reshape(raw_win(:, 7), [], 1);
+            ppg_col   = double(raw_win(:, 1));
+            hotf1_col = double(raw_win(:, 2));
+            hotf2_col = double(raw_win(:, 3));
+            hotf3_col = double(raw_win(:, 4));
+            accx_col  = double(raw_win(:, 5));
+            accy_col  = double(raw_win(:, 6));
+            accz_col  = double(raw_win(:, 7));
+
+            % 确保是列向量（即使输入是行向量）
+            if size(ppg_col, 2) > 1, ppg_col = ppg_col(:); end
+            if size(hotf1_col, 2) > 1, hotf1_col = hotf1_col(:); end
+            if size(hotf2_col, 2) > 1, hotf2_col = hotf2_col(:); end
+            if size(hotf3_col, 2) > 1, hotf3_col = hotf3_col(:); end
+            if size(accx_col, 2) > 1, accx_col = accx_col(:); end
+            if size(accy_col, 2) > 1, accy_col = accy_col(:); end
+            if size(accz_col, 2) > 1, accz_col = accz_col(:); end
 
             % 处理离群值（使用安全的填充方式）
-            ppg_ori   = resample(filloutliers(ppg_col,   'previous', 'mean'), Fs, Fs_Ori);
+            try
+                ppg_cleaned = filloutliers(ppg_col, 'previous', 'mean');
+            catch
+                ppg_cleaned = ppg_col;  % 如果filloutliers失败，使用原始数据
+            end
+
+            ppg_ori   = resample(ppg_cleaned, Fs, Fs_Ori);
             hotf1_ori = resample(hotf1_col, Fs, Fs_Ori);
             hotf2_ori = resample(hotf2_col, Fs, Fs_Ori);
             hotf3_ori = resample(hotf3_col, Fs, Fs_Ori);
