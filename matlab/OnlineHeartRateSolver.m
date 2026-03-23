@@ -268,6 +268,7 @@ end
 
 %% ====== 核心辅助子函数 ======
 function est_freq = Helper_Process_Spectrum(sig_in, sig_penalty_ref, Fs, para, times, prev_hr, enable_penalty, range_hz, limit_bpm, step_bpm)
+    % 1. 频谱惩罚
     [S_rls, S_rls_amp] = FFT_Peaks(sig_in, Fs, 0.3);
     
     if para.Spec_Penalty_Enable && enable_penalty
@@ -281,21 +282,34 @@ function est_freq = Helper_Process_Spectrum(sig_in, sig_penalty_ref, Fs, para, t
         end
     end
     
+    % 2. 寻峰
     Fre = Find_maxpeak(S_rls, S_rls, S_rls_amp);
     if isempty(Fre), Fre = 0; end
     curr_raw = Fre(1);
     
+    % 3. 历史追踪
     if times == 1
         est_freq = curr_raw;
     else
-        [calc_hr, ~] = Find_nearBiggest(Fre, prev_hr, range_hz, -range_hz);
+        % 定义就近寻峰的搜索半径标量 (例如 0.5Hz，相当于允许上下浮动 30 BPM)
+        % 修复原程序中将 range_hz 数组 [0.67, 3.0] 直接传入导致的 && 运算符崩溃
+        search_radius = 0.5; 
+        [calc_hr, ~] = Find_nearBiggest(Fre, prev_hr, search_radius, -search_radius);
+        
         diff_hr = calc_hr - prev_hr;
         limit   = limit_bpm / 60;
         step    = step_bpm / 60; 
         
-        if diff_hr > limit,      est_freq = prev_hr + step;
-        elseif diff_hr < -limit, est_freq = prev_hr - step;
-        else,                    est_freq = calc_hr;
+        if diff_hr > limit
+            est_freq = prev_hr + step;
+        elseif diff_hr < -limit
+            est_freq = prev_hr - step;
+        else
+            est_freq = calc_hr;
         end
     end
+    
+    % 4. 绝对物理边界钳位 (防止追踪异常导致输出偏离生理极限)
+    % range_hz 为传入的绝对范围参数，如 [0.67, 3.0]
+    est_freq = min(max(est_freq, range_hz(1)), range_hz(2));
 end
