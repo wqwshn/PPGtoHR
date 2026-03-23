@@ -5,11 +5,13 @@ import csv
 import serial
 import serial.tools.list_ports
 from collections import deque
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QGridLayout, QLabel, QComboBox, QPushButton, 
+import threading
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QGridLayout, QLabel, QComboBox, QPushButton,
                              QLineEdit, QFileDialog, QGroupBox, QMessageBox)
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
 import pyqtgraph as pg
+from matlab_worker import MatlabWorkerThread
 
 # ---------------------------------------------------------
 # 数据接收与解析线程 (后台)
@@ -163,7 +165,30 @@ class MainWindow(QMainWindow):
         self.recording_start_time = None  # 记录开始时间
 
         # 采样率统计变量
-        self.packet_count = 0 
+        self.packet_count = 0
+
+        # MATLAB工作线程初始化
+        self.matlab_worker = None
+        self.matlab_available = False
+        self.data_buffer = deque(maxlen=1000)  # 8秒数据缓存 @ 125Hz
+        self.data_lock = threading.Lock()
+
+        # 尝试初始化MATLAB
+        try:
+            self.matlab_worker = MatlabWorkerThread()
+            self.matlab_worker.init_solver('tiaosheng')  # 默认场景
+            self.matlab_worker.set_data_buffer(self.data_buffer, self.data_lock)
+            self.matlab_worker.hr_ready.connect(self.handle_hr_result)
+            self.matlab_worker.error_occurred.connect(self.handle_matlab_error)
+            self.matlab_worker.status_changed.connect(self.handle_matlab_status)
+            self.matlab_available = True
+        except ImportError:
+            QMessageBox.warning(self, "MATLAB Engine未安装",
+                "未检测到MATLAB Engine API。\n\n"
+                "心率功能将不可用。")
+        except Exception as e:
+            QMessageBox.warning(self, "MATLAB启动失败",
+                f"无法启动MATLAB: {e}\n\n心率功能将不可用。")
 
         self.plot_pts = 1000
         self.data_Uc1 = deque(maxlen=self.plot_pts)
@@ -173,7 +198,7 @@ class MainWindow(QMainWindow):
         self.data_Accx = deque(maxlen=self.plot_pts)
         self.data_Accy = deque(maxlen=self.plot_pts)
         self.data_Accz = deque(maxlen=self.plot_pts)
-        
+
         # 扩展 PPG 和 温度 存储
         self.data_ppg_g = deque(maxlen=self.plot_pts)
         self.data_ppg_r = deque(maxlen=self.plot_pts)
@@ -485,6 +510,19 @@ class MainWindow(QMainWindow):
             self.curve_accx.setData(list(self.data_Accx))
             self.curve_accy.setData(list(self.data_Accy))
             self.curve_accz.setData(list(self.data_Accz))
+
+    def handle_hr_result(self, hr_hf, hr_acc, is_motion):
+        """处理心率计算结果"""
+        # 将在Task 10中实现UI更新
+        pass
+
+    def handle_matlab_error(self, error_msg):
+        """处理MATLAB错误"""
+        QMessageBox.warning(self, "MATLAB错误", error_msg)
+
+    def handle_matlab_status(self, status_msg):
+        """处理MATLAB状态更新"""
+        print(f"MATLAB状态: {status_msg}")
 
     def closeEvent(self, event):
         if self.serial_thread and self.serial_thread.is_running:
