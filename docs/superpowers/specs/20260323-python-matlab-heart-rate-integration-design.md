@@ -2,6 +2,7 @@
 
 **日期**: 2026-03-23
 **状态**: 已批准
+**版本**: 1.1
 **作者**: Claude Code
 
 ---
@@ -81,7 +82,7 @@ SerialReaderThread → DataBuffer → MatlabWorkerThread → UI更新
 
 ### 3.1 DataBuffer（数据缓存）
 
-**实现**: `collections.deque(maxlen=1000)`
+**实现**: `collections.deque(maxlen=1000)` + `threading.Lock()`
 
 **数据结构**: 每个元素为7元组
 ```python
@@ -90,15 +91,20 @@ SerialReaderThread → DataBuffer → MatlabWorkerThread → UI更新
 #            第三路HF置零，满足MATLAB接口要求
 ```
 
-**线程安全**: `deque`是线程安全的，无需额外锁
+**线程安全**:
+- `deque`的`append`和`popleft`操作是原子的
+- 使用`Lock`保护`list(deque)`转换操作
+- 写操作(SerialReaderThread)与读操作(MatlabWorkerThread)隔离
 
 ### 3.2 MatlabWorkerThread（MATLAB工作线程）
 
 **职责**:
-1. 启动MATLAB Engine
-2. 初始化`OnlineHeartRateSolver`
-3. 每1秒触发一次计算
-4. 通过信号槽返回结果
+1. 启动MATLAB Engine并设置工作路径
+2. 创建默认参数结构体
+3. 初始化`OnlineHeartRateSolver`
+4. 每1秒触发一次计算
+5. 通过信号槽返回结果
+6. 错误恢复机制
 
 **核心接口**:
 ```python
@@ -106,37 +112,131 @@ class MatlabWorkerThread(QThread):
     # 信号定义
     hr_ready = pyqtSignal(float, float, bool)  # HR_HF, HR_ACC, is_motion
     error_occurred = pyqtSignal(str)
+    status_changed = pyqtSignal(str)  # 状态信息
 
     # 初始化MATLAB求解器
     def init_solver(self, scenario_name: str)
 
     # 设置数据缓存引用
-    def set_data_buffer(self, buffer: deque)
+    def set_data_buffer(self, buffer: deque, lock: threading.Lock)
 
     # 启动/停止计算
     def start_calculation(self)
     def stop_calculation(self)
+
+    # 错误恢复
+    def restart_matlab_engine(self)
+```
+
+**MATLAB初始化**:
+```python
+def init_solver(self, scenario_name: str):
+    import matlab.engine
+
+    # 设置工作路径（必须）
+    matlab_path = r'D:\data\PPG_HeartRate\Algorithm\ALL\matlab'
+    self.eng.cd(matlab_path)
+
+    # 创建默认参数结构体
+    para_base = self.eng.struct()
+    para_base.Fs_Target = 100
+    para_base.HR_Range_Hz = [0.67, 3.0]  # 40-180 BPM
+    para_base.Smooth_Win_Len = 5
+    para_base.Calib_Time = 60
+    para_base.Motion_Th_Scale = 3
+    para_base.Spec_Penalty_Enable = 1
+    para_base.Spec_Penalty_Weight = 0.2
+    para_base.Spec_Penalty_Width = 0.1
+    para_base.Max_Order = 100
+    para_base.Slew_Limit_BPM = 20
+    para_base.Slew_Step_BPM = 10
+    para_base.Slew_Limit_Rest = 15
+    para_base.Slew_Step_Rest = 5
+    para_base.HR_Range_Rest = [0.67, 3.0]
+
+    # 调用构造函数
+    self.solver = self.eng.OnlineHeartRateSolver(scenario_name, para_base)
+    self.current_scenario = scenario_name
 ```
 
 **计算流程**:
 ```python
 def _process_step(self):
-    # 1. 从DataBuffer取最新125个点
-    data = list(self.data_buffer)[-125:]
-    if len(data) < 125:
-        return  # 数据不足
+    # 1. 使用锁保护数据读取
+    with self.data_lock:
+        if len(self.data_buffer) < 125:
+            self.status_changed.emit("数据收集中...")
+            return
+        data = list(self.data_buffer)[-125:]
 
-    # 2. 转换为MATLAB格式
-    mat_data = matlab.double(data)
+    # 2. 转换为numpy数组再传给MATLAB
+    import numpy as np
+    mat_data = matlab.double(np.array(data).tolist())
 
-    # 3. 调用MATLAB
-    results = self.solver.process_step(mat_data)
+    # 3. 调用MATLAB（带超时保护）
+    try:
+        results = self._process_step_with_timeout(mat_data, timeout=2.0)
+    except TimeoutError:
+        self.timeout_count += 1
+        if self.timeout_count >= 3:
+            self.error_occurred.emit("MATLAB计算连续超时，尝试重启引擎")
+            self.restart_matlab_engine()
+        return
 
-    # 4. 发送信号
-    if is_ready:
-        hr_hf = results['Final_HR_HF'] * 60  # Hz → BPM
-        hr_acc = results['Final_HR_ACC'] * 60
+    # 4. 解析结果（MATLAB返回标量可直接访问）
+    if results is not None and results.get('is_ready', False):
+        hr_hf = float(results['Final_HR_HF']) * 60  # Hz → BPM
+        hr_acc = float(results['Final_HR_ACC']) * 60
+        is_motion = bool(results['Motion_Flag_HF_Path'])
         self.hr_ready.emit(hr_hf, hr_acc, is_motion)
+        self.timeout_count = 0  # 重置超时计数
+```
+
+**超时保护实现**:
+```python
+def _process_step_with_timeout(self, data, timeout=2.0):
+    result = [None]
+    exception = [None]
+    is_ready = [False]
+
+    def worker():
+        try:
+            hr_results, ready = self.solver.process_step(data)
+            if ready:
+                result[0] = hr_results
+                is_ready[0] = True
+        except Exception as e:
+            exception[0] = e
+
+    thread = threading.Thread(target=worker)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise TimeoutError("MATLAB计算超时")
+    if exception[0]:
+        raise exception[0]
+
+    return {'results': result[0], 'is_ready': is_ready[0]}
+```
+
+**错误恢复机制**:
+```python
+def restart_matlab_engine(self):
+    try:
+        if self.eng:
+            self.eng.quit()
+    except:
+        pass
+
+    # 重新启动
+    import matlab.engine
+    self.eng = matlab.engine.start_matlab()
+    matlab_path = r'D:\data\PPG_HeartRate\Algorithm\ALL\matlab'
+    self.eng.cd(matlab_path)
+    self.init_solver(self.current_scenario)
+    self.status_changed.emit("MATLAB引擎已重启")
 ```
 
 ### 3.3 UI新增：心率显示区域
@@ -184,12 +284,14 @@ def _process_step(self):
 └─────────────────────────────────┘
 ```
 
-**场景映射**:
+**场景映射**（与实际文件匹配）:
 | Python场景名 | MATLAB参数文件 |
 |--------------|----------------|
-| tiaosheng | `Best_Params_Result_tiaosheng.mat` |
-| bobi | `Best_Params_Result_bobi.mat` |
-| kaihe | `Best_Params_Result_kaihe.mat` |
+| tiaosheng | `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| bobi | `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| kaihe | `Best_Params_20260119dualtiaosheng1_processed.mat` |
+
+**注意**: 当前只有一个参数文件，三个场景暂时共享该文件。后续可为每个场景生成独立的参数文件。
 
 **切换逻辑**:
 ```python
@@ -200,7 +302,12 @@ def load_scenario(self):
     self.matlab_worker.stop_calculation()
 
     # 重新初始化求解器
-    self.matlab_worker.init_solver(scenario_name)
+    try:
+        self.matlab_worker.init_solver(scenario_name)
+        self.matlab_worker.status_changed.connect(self.update_matlab_status)
+    except Exception as e:
+        QMessageBox.warning(self, "场景加载失败", f"无法加载场景 {scenario_name}: {e}")
+        return
 
     # 恢复计算
     if self.serial_thread and self.serial_thread.is_running:
@@ -240,25 +347,34 @@ results.Motion_Flag_HF_Path  % boolean
 results.Motion_Flag_ACC_Path % boolean
 ```
 
-**Python接收**:
+**Python接收**（MATLAB Engine返回标量时直接访问）:
 ```python
-hr_hf = results['Final_HR_HF'][0][0] * 60  # Hz → BPM
-hr_acc = results['Final_HR_ACC'][0][0] * 60
-is_motion = results['Motion_Flag_HF_Path'][0][0]
+# MATLAB Engine返回的标量可直接转换为Python类型
+hr_hf = float(results['Final_HR_HF']) * 60  # Hz → BPM
+hr_acc = float(results['Final_HR_ACC']) * 60
+is_motion = bool(results['Motion_Flag_HF_Path'])
 ```
 
-### 4.3 CSV记录扩展
+### 4.3 CSV记录扩展（双文件方案）
 
-**新增列**:
+为了避免混用不同采样率的数据，采用**双文件记录**方案：
+
+**文件1: 传感器数据** (`SensorData_YYYYmmdd_HHMMSS.csv`)
 ```csv
-Time(s), Mode, Uc1(mV), Uc2(mV), Ut1(mV), Ut2(mV), AccX, AccY, AccZ,
-PPG_Green, PPG_Red, PPG_IR, Temp(C), HR_HF(BPM), HR_ACC(BPM), Motion_State
+Time(s), Mode, Uc1(mV), Uc2(mV), Ut1(mV), Ut2(mV), AccX, AccY, AccZ, PPG_Green, PPG_Red, PPG_IR, Temp(C)
 ```
+- 采样频率: 125Hz
+- 每个串口数据包写入一行
 
-**记录策略**:
-- 传感器数据: 按采样频率记录（125Hz）
-- 心率数据: 按1秒频率记录，每秒重复写入
-- 未就绪时: 心率列写入 `-1`
+**文件2: 心率数据** (`HeartRate_YYYYmmdd_HHMMSS.csv`)
+```csv
+Time(s), HR_HF(BPM), HR_ACC(BPM), Motion_State, Scenario
+```
+- 采样频率: 1Hz
+- 每次MATLAB计算结果写入一行
+- 使用相同的时间基准（相对于记录开始时间）
+
+**未就绪处理**: 心率未就绪时，心率列写入 `-1`，运动状态写入 `-1`
 
 ---
 
@@ -270,16 +386,29 @@ PPG_Green, PPG_Red, PPG_IR, Temp(C), HR_HF(BPM), HR_ACC(BPM), Motion_State
 
 **处理策略**:
 ```python
-try:
-    import matlab.engine
-    self.eng = matlab.engine.start_matlab()
-except Exception as e:
-    QMessageBox.warning(self, "MATLAB未连接",
-        f"无法启动MATLAB Engine: {e}\n心率功能将不可用")
+def __init__(self):
     self.matlab_available = False
+    self.matlab_worker = None
+
+    try:
+        import matlab.engine
+        self.matlab_worker = MatlabWorkerThread()
+        self.matlab_worker.init_solver('tiaosheng')
+        self.matlab_available = True
+    except ImportError:
+        QMessageBox.warning(self, "MATLAB Engine未安装",
+            "未检测到MATLAB Engine API。\n\n"
+            "请按以下步骤安装：\n"
+            "1. 打开MATLAB R2021b\n"
+            "2. 执行: cd('matlabroot/extern/engines/python')\n"
+            "3. 执行: system('python setup.py install')\n\n"
+            "心率功能将不可用。")
+    except Exception as e:
+        QMessageBox.warning(self, "MATLAB启动失败",
+            f"无法启动MATLAB Engine: {e}\n\n心率功能将不可用。")
 ```
 
-**降级运行**: 主程序继续运行，仅禁用心率功能
+**降级运行**: 主程序继续运行，仅禁用心率相关UI和功能
 
 ### 5.2 数据不足
 
@@ -287,35 +416,42 @@ except Exception as e:
 
 **UI处理**:
 ```python
-if len(self.data_buffer) < 125:
-    self.lbl_hr_hf.setText("HF: -- BPM")
-    self.lbl_hr_acc.setText("ACC: -- BPM")
-    self.lbl_status.setText("心率校准中...")
+def update_hr_display(self, hr_hf, hr_acc, is_motion):
+    if hr_hf < 0:  # 未就绪标记
+        self.lbl_hr_hf.setText("HF: -- BPM")
+        self.lbl_hr_acc.setText("ACC: -- BPM")
+        self.lbl_status.setText("心率校准中...")
+    else:
+        self.lbl_hr_hf.setText(f"HF: {hr_hf:.0f} BPM")
+        self.lbl_hr_acc.setText(f"ACC: {hr_acc:.0f} BPM")
+        motion_str = "运动" if is_motion else "静息"
+        self.lbl_status.setText(f"运动状态: {motion_str}")
 ```
 
 ### 5.3 计算超时
 
-**检测**: 单次计算超过2秒
+**检测**: 单次计算超过2秒（使用线程实现超时）
 
 **处理策略**:
-```python
-def _process_step_with_timeout(self):
-    try:
-        # 设置2秒超时
-        result = self.solver.process_step(data, timeout=2.0)
-    except TimeoutError:
-        self.timeout_count += 1
-        if self.timeout_count >= 3:
-            self.error_occurred.emit("MATLAB计算连续超时，请检查状态")
-```
+- 单次超时: 跳过本次计算，保持历史值
+- 连续3次超时: 触发MATLAB引擎重启
+- 重启失败: 通知用户并禁用心率功能
 
 ### 5.4 线程安全
 
-**DataBuffer**: `collections.deque` 天然线程安全
+**DataBuffer**:
+```python
+# 写操作（SerialReaderThread）
+self.data_buffer.append(new_data)  # 原子操作，无需锁
 
-**信号槽通信**: PyQt跨线程安全
+# 读操作（MatlabWorkerThread）
+with self.data_lock:
+    data = list(self.data_buffer)[-125:]  # 需要锁保护
+```
 
-**MATLAB Engine**: 单线程串行调用，无需额外同步
+**信号槽通信**: PyQt跨线程安全，自动调度
+
+**MATLAB Engine**: 单线程串行调用，由MatlabWorkerThread内部管理
 
 ---
 
@@ -345,6 +481,7 @@ def _process_step_with_timeout(self):
 1. **阶段1**: MATLAB Worker模块
    - 实现MatlabWorkerThread类
    - MATLAB Engine调用封装
+   - 超时保护和错误恢复
    - 单元测试
 
 2. **阶段2**: UI集成
@@ -353,13 +490,13 @@ def _process_step_with_timeout(self):
    - 信号槽连接
 
 3. **阶段3**: 数据流集成
-   - DataBuffer集成
-   - CSV记录扩展
+   - DataBuffer与线程锁集成
+   - CSV双文件记录
    - 端到端测试
 
 4. **阶段4**: 错误处理与优化
-   - 超时保护
-   - 降级运行
+   - 降级运行模式
+   - MATLAB引擎重启机制
    - 性能调优
 
 ### 7.3 测试计划
@@ -368,6 +505,7 @@ def _process_step_with_timeout(self):
 - **集成测试**: 与串口数据联调
 - **场景测试**: 三个运动场景参数切换
 - **压力测试**: 长时间运行稳定性
+- **故障恢复**: MATLAB崩溃后自动恢复
 
 ---
 
@@ -377,6 +515,7 @@ def _process_step_with_timeout(self):
 
 ```
 matlab>=R2021b  # MATLAB Engine API
+numpy>=1.21.0   # 数据转换
 PyQt5>=5.15.0
 pyqtgraph>=0.12.0
 ```
@@ -387,16 +526,35 @@ pyqtgraph>=0.12.0
 - Signal Processing Toolbox
 - Statistics and Machine Learning Toolbox
 
-### 8.3 安装步骤
+### 8.3 MATLAB Engine API 安装步骤
 
-```bash
-# 1. 在MATLAB中安装Python引擎
-cd "matlabroot\extern\engines\python"
-python setup.py install
-
-# 2. 验证安装
-python -c "import matlab.engine; print('OK')"
+**方法1: 使用MATLAB命令**
+```matlab
+% 在MATLAB命令窗口中执行
+cd('C:\Program Files\MATLAB\R2021b\extern\engines\python')
+system('python setup.py install')
 ```
+
+**方法2: 使用Windows命令行**
+```cmd
+cd "C:\Program Files\MATLAB\R2021b\extern\engines\python"
+python setup.py install
+```
+
+**验证安装**:
+```python
+# 在Python中测试
+import matlab.engine
+eng = matlab.engine.start_matlab()
+result = eng.sqrt(16)
+print(result)  # 应输出 4.0
+eng.quit()
+```
+
+**故障排除**:
+- 如果找不到`matlabroot`，手动使用完整路径
+- 确保Python版本与MATLAB兼容（3.7-3.9）
+- 如果有多个Python环境，确保安装到正确的环境
 
 ---
 
@@ -404,11 +562,16 @@ python -c "import matlab.engine; print('OK')"
 
 ### 9.1 MATLAB参数文件格式
 
+当前可用的参数文件：
 ```matlab
-Best_Params_Result_tiaosheng.mat
+Best_Params_20260119dualtiaosheng1_processed.mat
 ├── Best_Para_HF (struct)
 └── Best_Para_ACC (struct)
 ```
+
+该文件对应`OnlineHeartRateSolver`中的场景名：`dualtiaosheng1`
+
+**注意**: 需要将场景名`dualtiaosheng1`映射到Python中的`tiaosheng`选项。
 
 ### 9.2 关键常量
 
@@ -419,9 +582,28 @@ STEP_SIZE = 1              # 秒
 BUFFER_LEN = 1000          # 125 * 8
 HR_UPDATE_INTERVAL = 1000  # 毫秒
 HEART_RATE_RANGE = (40, 200)  # BPM
+CALCULATION_TIMEOUT = 2.0  # 秒
+MAX_TIMEOUT_COUNT = 3      # 连续超时次数
 ```
+
+### 9.3 场景名称映射
+
+| Python显示 | MATLAB场景名 | 参数文件 |
+|-----------|-------------|---------|
+| tiaosheng (跳绳) | dualtiaosheng1 | Best_Params_20260119dualtiaosheng1_processed.mat |
+| bobi (波比跳) | dualtiaosheng1 | 共享（待生成专用参数） |
+| kaihe (开合跳) | dualtiaosheng1 | 共享（待生成专用参数） |
 
 ---
 
-**文档版本**: 1.0
+## 10. 设计修订记录
+
+| 版本 | 日期 | 修订内容 |
+|------|------|---------|
+| 1.0 | 2026-03-23 | 初始版本 |
+| 1.1 | 2026-03-23 | 修复审查发现的问题：参数文件名、MATLAB接口、线程安全、超时机制、CSV记录策略 |
+
+---
+
+**文档版本**: 1.1
 **最后更新**: 2026-03-23
