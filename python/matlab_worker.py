@@ -113,3 +113,29 @@ class MatlabWorkerThread(QThread):
         para.Slew_Step_Rest = 5
         para.HR_Range_Rest = [0.67, 3.0]
         return para
+
+    def _get_data_for_matlab(self):
+        """
+        从DataBuffer获取最新125个数据点并转换为MATLAB格式
+
+        Returns:
+            matlab.double: 125x7矩阵，每行格式为 [PPG, HF1, HF2, HF3, ACCx, ACCy, ACCz]
+            None: 数据不足
+        """
+        if self.data_buffer is None or len(self.data_buffer) < 125:
+            return None
+
+        # 使用锁保护数据读取
+        with self.data_lock:
+            # 取最新125个点
+            raw_data = list(self.data_buffer)[-125:]
+
+        # 转换为numpy数组
+        import numpy as np
+        data_array = np.array(raw_data, dtype=np.float64)
+
+        # 转换为MATLAB格式
+        import matlab.engine
+        mat_data = matlab.double(data_array.tolist())
+
+        return mat_data
