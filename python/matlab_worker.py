@@ -31,12 +31,15 @@ class MatlabWorkerThread(QThread):
 
     def run(self):
         """线程主循环"""
-        print(f"[MATLAB] MatlabWorkerThread已启动，线程ID: {int(QThread.currentThreadId())}")
+        import sys
+        sys.stdout.write("[MATLAB] MatlabWorkerThread已启动\n")
+        sys.stdout.flush()
         # 启动计算定时器
         self.timer = QTimer()
         self.timer.timeout.connect(self._process_step)
         self.timer.start(1000)  # 每1秒触发一次
-        print(f"[MATLAB] 定时器已启动，每1秒触发一次计算")
+        sys.stdout.write("[MATLAB] 定时器已启动，每1秒触发一次计算\n")
+        sys.stdout.flush()
         self.exec()
 
     def set_data_buffer(self, buffer: deque, lock: threading.Lock):
@@ -46,7 +49,9 @@ class MatlabWorkerThread(QThread):
 
     def start_calculation(self):
         """启动计算"""
-        print(f"[MATLAB] start_calculation()被调用")
+        import sys
+        sys.stdout.write("[MATLAB] start_calculation()被调用\n")
+        sys.stdout.flush()
         self.is_calculating = True
         self.status_changed.emit("MATLAB计算已启动")
 
@@ -194,11 +199,14 @@ class MatlabWorkerThread(QThread):
 
     def _process_step(self):
         """主计算流程入口，由定时器每秒触发"""
+        import sys
+
         if not self.is_calculating:
             return
 
         if self.solver is None:
-            print("[MATLAB] Solver未初始化")
+            sys.stdout.write("[MATLAB] Solver未初始化\n")
+            sys.stdout.flush()
             return
 
         # 1. 获取数据
@@ -206,28 +214,34 @@ class MatlabWorkerThread(QThread):
             mat_data = self._get_data_for_matlab()
             if mat_data is None:
                 buffer_len = len(self.data_buffer) if self.data_buffer else 0
-                print(f"[MATLAB] 数据不足: 当前{buffer_len}点，需要125点")
+                sys.stdout.write(f"[MATLAB] 数据不足: 当前{buffer_len}点，需要125点\n")
+                sys.stdout.flush()
                 self.status_changed.emit("数据收集中...")
                 return
-            print(f"[MATLAB] 数据已获取: {len(mat_data)} x {len(mat_data[0])}")
+            sys.stdout.write(f"[MATLAB] 数据已获取: {len(mat_data)} x {len(mat_data[0])}\n")
+            sys.stdout.flush()
         except Exception as e:
             self.error_occurred.emit(f"数据获取失败: {str(e)}")
             return
 
         # 2. 调用MATLAB（带超时保护）
         try:
-            print(f"[MATLAB] 调用process_step...")
+            sys.stdout.write("[MATLAB] 调用process_step...\n")
+            sys.stdout.flush()
             result = self._process_step_with_timeout(mat_data, timeout=2.0)
-            print(f"[MATLAB] process_step完成: is_ready={result.get('is_ready', False)}")
+            sys.stdout.write(f"[MATLAB] process_step完成: is_ready={result.get('is_ready', False)}\n")
+            sys.stdout.flush()
         except TimeoutError:
             self.timeout_count += 1
-            print(f"[MATLAB] 计算超时 (次数: {self.timeout_count})")
+            sys.stdout.write(f"[MATLAB] 计算超时 (次数: {self.timeout_count})\n")
+            sys.stdout.flush()
             if self.timeout_count >= 3:
                 self.error_occurred.emit("MATLAB计算连续超时，尝试重启引擎")
                 self._restart_matlab_engine()
             return
         except Exception as e:
-            print(f"[MATLAB] 计算异常: {str(e)}")
+            sys.stdout.write(f"[MATLAB] 计算异常: {str(e)}\n")
+            sys.stdout.flush()
             self.error_occurred.emit(f"MATLAB计算异常: {str(e)}")
             return
 
@@ -240,16 +254,19 @@ class MatlabWorkerThread(QThread):
                 hr_acc = float(hr_results['Final_HR_ACC']) * 60
                 is_motion = bool(hr_results['Motion_Flag_HF_Path'])
 
-                print(f"[MATLAB] 心率结果: HF={hr_hf:.1f}, ACC={hr_acc:.1f}, Motion={is_motion}")
+                sys.stdout.write(f"[MATLAB] 心率结果: HF={hr_hf:.1f}, ACC={hr_acc:.1f}, Motion={is_motion}\n")
+                sys.stdout.flush()
 
                 # 发送信号
                 self.hr_ready.emit(hr_hf, hr_acc, is_motion)
                 self.timeout_count = 0  # 重置超时计数
             except (KeyError, TypeError, ValueError) as e:
-                print(f"[MATLAB] 结果解析失败: {str(e)}")
+                sys.stdout.write(f"[MATLAB] 结果解析失败: {str(e)}\n")
+                sys.stdout.flush()
                 self.error_occurred.emit(f"结果解析失败: {str(e)}")
         else:
-            print(f"[MATLAB] 结果未就绪 (is_ready=False)")
+            sys.stdout.write("[MATLAB] 结果未就绪 (is_ready=False)\n")
+            sys.stdout.flush()
 
     def _restart_matlab_engine(self):
         """重启MATLAB Engine和求解器"""
