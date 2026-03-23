@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
             self.matlab_worker.hr_ready.connect(self.handle_hr_result)
             self.matlab_worker.error_occurred.connect(self.handle_matlab_error)
             self.matlab_worker.status_changed.connect(self.handle_matlab_status)
+            self.matlab_worker.start()  # 启动QThread，这会执行run()方法
             self.matlab_available = True
         except ImportError:
             QMessageBox.warning(self, "MATLAB Engine未安装",
