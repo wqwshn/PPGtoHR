@@ -214,6 +214,12 @@ class MainWindow(QMainWindow):
         self.data_ppg_ir = deque(maxlen=self.plot_pts)
         self.data_temp = deque(maxlen=self.plot_pts)
 
+        # 心率数据存储
+        self.data_hr_hf = deque(maxlen=60)  # 60秒历史
+        self.data_hr_acc = deque(maxlen=60)
+        self.data_time = deque(maxlen=60)
+        self.hr_start_time = time.time()
+
         self.init_ui()
 
         # 图表刷新定时器
@@ -298,9 +304,41 @@ class MainWindow(QMainWindow):
         record_vbox.addWidget(self.btn_record)
         record_group.setLayout(record_vbox)
 
+        # 4. 心率监测 (新增)
+        hr_group = QGroupBox("心率监测")
+        hr_vbox = QVBoxLayout()
+
+        # 数值显示
+        hr_info_layout = QHBoxLayout()
+        self.lbl_hr_hf = QLabel("HF: -- BPM")
+        self.lbl_hr_hf.setStyleSheet("font-weight: bold; color: #4CAF50; font-size: 16px;")
+        self.lbl_hr_acc = QLabel("ACC: -- BPM")
+        self.lbl_hr_acc.setStyleSheet("font-weight: bold; color: #9E9E9E; font-size: 14px;")
+        self.lbl_motion = QLabel("状态: --")
+        self.lbl_motion.setStyleSheet("color: #FF9800;")
+        hr_info_layout.addWidget(self.lbl_hr_hf)
+        hr_info_layout.addWidget(self.lbl_hr_acc)
+        hr_info_layout.addWidget(self.lbl_motion)
+
+        hr_vbox.addLayout(hr_info_layout)
+
+        # 心率波形图
+        self.plot_w_hr = pg.PlotWidget(title="心率趋势 (最近60秒)")
+        self.plot_w_hr.showGrid(x=True, y=True)
+        self.plot_w_hr.setYRange(40, 200)
+        self.plot_w_hr.setLabel('left', '心率', units='BPM')
+        self.plot_w_hr.setLabel('bottom', '时间', units='s')
+        self.curve_hr_hf = self.plot_w_hr.plot(pen=pg.mkPen('g', width=2), name="HF")
+        self.curve_hr_acc = self.plot_w_hr.plot(pen=pg.mkPen((150,150,150), width=1, style=Qt.DashLine), name="ACC")
+        self.plot_w_hr.addLegend()
+
+        hr_vbox.addWidget(self.plot_w_hr)
+        hr_group.setLayout(hr_vbox)
+
         control_layout.addWidget(status_group)
         control_layout.addWidget(serial_group)
         control_layout.addWidget(record_group)
+        control_layout.addWidget(hr_group)
         control_layout.addStretch()
 
         # --- 右侧波形显示面板 ---
@@ -520,10 +558,25 @@ class MainWindow(QMainWindow):
             self.curve_accy.setData(list(self.data_Accy))
             self.curve_accz.setData(list(self.data_Accz))
 
+            # 更新心率曲线
+            if len(self.data_time) > 0:
+                self.curve_hr_hf.setData(list(self.data_time), list(self.data_hr_hf))
+                self.curve_hr_acc.setData(list(self.data_time), list(self.data_hr_acc))
+
     def handle_hr_result(self, hr_hf, hr_acc, is_motion):
         """处理心率计算结果"""
-        # 将在Task 10中实现UI更新
-        pass
+        # 更新数值显示
+        self.lbl_hr_hf.setText(f"HF: {hr_hf:.0f} BPM")
+        self.lbl_hr_acc.setText(f"ACC: {hr_acc:.0f} BPM")
+
+        motion_str = "运动" if is_motion else "静息"
+        self.lbl_motion.setText(f"状态: {motion_str}")
+
+        # 更新波形图数据
+        elapsed = time.time() - self.hr_start_time
+        self.data_hr_hf.append(hr_hf)
+        self.data_hr_acc.append(hr_acc)
+        self.data_time.append(elapsed)
 
     def handle_matlab_error(self, error_msg):
         """处理MATLAB错误"""
