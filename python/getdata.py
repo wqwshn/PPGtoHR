@@ -335,10 +335,39 @@ class MainWindow(QMainWindow):
         hr_vbox.addWidget(self.plot_w_hr)
         hr_group.setLayout(hr_vbox)
 
+        # 5. 算法设置 (新增)
+        algo_group = QGroupBox("算法设置")
+        algo_vbox = QVBoxLayout()
+
+        # 场景选择
+        scenario_layout = QHBoxLayout()
+        scenario_layout.addWidget(QLabel("运动场景:"))
+        self.cb_scenario = QComboBox()
+        self.cb_scenario.addItem("tiaosheng")
+        self.cb_scenario.addItem("bobi")
+        self.cb_scenario.addItem("kaihe")
+        scenario_layout.addWidget(self.cb_scenario)
+
+        # 加载按钮
+        self.btn_load_scenario = QPushButton("加载场景参数")
+        self.btn_load_scenario.clicked.connect(self.load_scenario)
+        self.btn_load_scenario.setEnabled(self.matlab_available)
+
+        scenario_layout.addWidget(self.btn_load_scenario)
+        algo_vbox.addLayout(scenario_layout)
+
+        # 当前场景显示
+        self.lbl_current_scene = QLabel("当前场景: tiaosheng")
+        self.lbl_current_scene.setStyleSheet("color: #2196F3;")
+        algo_vbox.addWidget(self.lbl_current_scene)
+
+        algo_group.setLayout(algo_vbox)
+
         control_layout.addWidget(status_group)
         control_layout.addWidget(serial_group)
         control_layout.addWidget(record_group)
         control_layout.addWidget(hr_group)
+        control_layout.addWidget(algo_group)
         control_layout.addStretch()
 
         # --- 右侧波形显示面板 ---
@@ -446,7 +475,11 @@ class MainWindow(QMainWindow):
             self.lbl_mode.setText("当前模式: 离线")
             self.lbl_rate.setText("采样率: 0 Hz")
             self.lbl_loss.setText("丢包率: 0.00%")
-            
+
+            # 停止MATLAB计算
+            if self.matlab_available and self.matlab_worker:
+                self.matlab_worker.stop_calculation()
+
             if self.is_recording:
                 self.toggle_record()
         else:
@@ -465,6 +498,10 @@ class MainWindow(QMainWindow):
             self.btn_connect.setStyleSheet("background-color: #f44336; color: white;")
             self.cb_ports.setEnabled(False)
             self.cb_baudrate.setEnabled(False)
+
+            # 启动MATLAB计算
+            if self.matlab_available:
+                self.matlab_worker.start_calculation()
 
     def handle_serial_error(self, err_msg):
         QMessageBox.critical(self, "串口断开", err_msg)
@@ -586,7 +623,38 @@ class MainWindow(QMainWindow):
         """处理MATLAB状态更新"""
         print(f"MATLAB状态: {status_msg}")
 
+    def load_scenario(self):
+        """加载选定的场景参数"""
+        if not self.matlab_available or self.matlab_worker is None:
+            QMessageBox.warning(self, "提示", "MATLAB不可用，无法加载场景")
+            return
+
+        scenario_name = self.cb_scenario.currentText()
+
+        try:
+            # 停止当前计算
+            was_calculating = self.matlab_worker.is_calculating
+            self.matlab_worker.stop_calculation()
+
+            # 重新初始化求解器
+            self.matlab_worker.init_solver(scenario_name)
+
+            # 恢复计算
+            if was_calculating:
+                self.matlab_worker.start_calculation()
+
+            # 更新UI
+            self.lbl_current_scene.setText(f"当前场景: {scenario_name}")
+            QMessageBox.information(self, "成功", f"场景 [{scenario_name}] 加载成功")
+
+        except Exception as e:
+            QMessageBox.warning(self, "场景加载失败", f"无法加载场景 {scenario_name}: {e}")
+
     def closeEvent(self, event):
+        # 清理MATLAB资源
+        if self.matlab_worker:
+            self.matlab_worker.cleanup()
+
         if self.serial_thread and self.serial_thread.is_running:
             self.serial_thread.stop()
         if self.csv_file:
