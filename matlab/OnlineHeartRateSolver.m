@@ -121,13 +121,23 @@ classdef OnlineHeartRateSolver < handle
             Fs_Ori = obj.State.Fs_Origin;
             
             % 1. 独立重采样与滤波 (保证即便 Fs_Target 不同也能完美复刻)
-            ppg_ori   = resample(filloutliers(raw_win(:, 1),'previous','mean'), Fs, Fs_Ori);
-            hotf1_ori = resample(raw_win(:, 2), Fs, Fs_Ori);
-            hotf2_ori = resample(raw_win(:, 3), Fs, Fs_Ori);
-            hotf3_ori = resample(raw_win(:, 4), Fs, Fs_Ori);
-            accx_ori  = resample(raw_win(:, 5), Fs, Fs_Ori);
-            accy_ori  = resample(raw_win(:, 6), Fs, Fs_Ori);
-            accz_ori  = resample(raw_win(:, 7), Fs, Fs_Ori);
+            % 确保数据是列向量格式
+            ppg_col   = reshape(raw_win(:, 1), [], 1);
+            hotf1_col = reshape(raw_win(:, 2), [], 1);
+            hotf2_col = reshape(raw_win(:, 3), [], 1);
+            hotf3_col = reshape(raw_win(:, 4), [], 1);
+            accx_col  = reshape(raw_win(:, 5), [], 1);
+            accy_col  = reshape(raw_win(:, 6), [], 1);
+            accz_col  = reshape(raw_win(:, 7), [], 1);
+
+            % 处理离群值（使用安全的填充方式）
+            ppg_ori   = resample(filloutliers(ppg_col,   'previous', 'mean'), Fs, Fs_Ori);
+            hotf1_ori = resample(hotf1_col, Fs, Fs_Ori);
+            hotf2_ori = resample(hotf2_col, Fs, Fs_Ori);
+            hotf3_ori = resample(hotf3_col, Fs, Fs_Ori);
+            accx_ori  = resample(accx_col,  Fs, Fs_Ori);
+            accy_ori  = resample(accy_col,  Fs, Fs_Ori);
+            accz_ori  = resample(accz_col,  Fs, Fs_Ori);
             
             % 动态生成对应 Fs_Target 的滤波器
             [b_but, a_but] = butter(4, [0.5 5]/(Fs/2), 'bandpass');

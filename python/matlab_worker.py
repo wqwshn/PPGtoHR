@@ -152,12 +152,15 @@ class MatlabWorkerThread(QThread):
         sys.stdout.write(f"[DEBUG] data_array.shape: {data_array.shape}\n")
         sys.stdout.flush()
 
-        # 转换为MATLAB格式
+        # 转换为MATLAB格式 - 确保是行优先格式（每行一个时间点）
         import matlab.engine
-        mat_data = matlab.double(data_array.tolist())
+        # MATLAB Engine API 需要嵌套列表格式 [[row1], [row2], ...]
+        data_list = data_array.tolist()
+        mat_data = matlab.double(data_list)
 
         # 调试：检查MATLAB数据形状
         sys.stdout.write(f"[DEBUG] mat_data size: {len(mat_data)} x {len(mat_data[0]) if len(mat_data) > 0 else 0}\n")
+        sys.stdout.write(f"[DEBUG] First sample: {data_list[0]}\n")
         sys.stdout.flush()
 
         return mat_data
