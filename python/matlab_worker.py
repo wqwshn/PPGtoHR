@@ -97,21 +97,26 @@ class MatlabWorkerThread(QThread):
 
     def _create_default_params(self):
         """创建MATLAB算法的默认参数结构体"""
-        para = self.eng.struct()
-        para.Fs_Target = 100
-        para.HR_Range_Hz = [0.67, 3.0]  # 40-180 BPM
-        para.Smooth_Win_Len = 5
-        para.Calib_Time = 60
-        para.Motion_Th_Scale = 3
-        para.Spec_Penalty_Enable = 1
-        para.Spec_Penalty_Weight = 0.2
-        para.Spec_Penalty_Width = 0.1
-        para.Max_Order = 100
-        para.Slew_Limit_BPM = 20
-        para.Slew_Step_BPM = 10
-        para.Slew_Limit_Rest = 15
-        para.Slew_Step_Rest = 5
-        para.HR_Range_Rest = [0.67, 3.0]
+        # 使用MATLAB eval创建结构体（MATLAB Engine API的struct()返回字典）
+        import matlab.engine
+        para = self.eng.eval(
+            "struct("
+            "'Fs_Target',100,"
+            "'HR_Range_Hz',[0.67,3.0],"
+            "'Smooth_Win_Len',5,"
+            "'Calib_Time',60,"
+            "'Motion_Th_Scale',3,"
+            "'Spec_Penalty_Enable',1,"
+            "'Spec_Penalty_Weight',0.2,"
+            "'Spec_Penalty_Width',0.1,"
+            "'Max_Order',100,"
+            "'Slew_Limit_BPM',20,"
+            "'Slew_Step_BPM',10,"
+            "'Slew_Limit_Rest',15,"
+            "'Slew_Step_Rest',5,"
+            "'HR_Range_Rest',[0.67,3.0]"
+            ")"
+        )
         return para
 
     def _get_data_for_matlab(self):
