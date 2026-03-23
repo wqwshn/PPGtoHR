@@ -246,12 +246,19 @@ classdef OnlineHeartRateSolver < handle
                 
             obj.State.(['Hist_FFT_' path_type]) = Freq_FFT; % 更新历史
             
-            %% 5. 运动/静息融合开关
-            if is_motion
-                Fusion_HR = Freq_LMS; % 运动状态：切入自适应滤波
-            else
-                Fusion_HR = Freq_FFT; % 静息状态：切回纯频域追踪
-            end
+            %% 5. 运动/静息融合开关 (加权软切换)
+            % 使用 Sigmoid 函数实现平滑过渡，消除硬切换导致的锯齿波动
+            curr_std = std(acc_mag);
+            Th = obj.State.(['Th_ACC_for_' path_type]);
+
+            % 使用 Sigmoid 函数计算 LMS 权重 (0~1 平滑过渡)
+            % transition_width 控制过渡带宽度，值越大过渡越平缓
+            transition_width = 0.3;  % 过渡带宽度（相对于阈值的比例）
+            ratio = curr_std / Th;
+            W = 1 ./ (1 + exp(-4 * (ratio - 1) / transition_width));
+
+            % 加权融合：W->1 时完全使用 LMS，W->0 时完全使用 FFT
+            Fusion_HR = W * Freq_LMS + (1 - W) * Freq_FFT;
             
             out.Fusion_HR = Fusion_HR;
             out.Is_Motion = is_motion;
