@@ -2,7 +2,7 @@
 
 **日期**: 2026-03-23
 **状态**: 已批准
-**版本**: 1.1
+**版本**: 1.2
 **作者**: Claude Code
 
 ---
@@ -284,14 +284,18 @@ def restart_matlab_engine(self):
 └─────────────────────────────────┘
 ```
 
-**场景映射**（与实际文件匹配）:
-| Python场景名 | MATLAB参数文件 |
-|--------------|----------------|
-| tiaosheng | `Best_Params_20260119dualtiaosheng1_processed.mat` |
-| bobi | `Best_Params_20260119dualtiaosheng1_processed.mat` |
-| kaihe | `Best_Params_20260119dualtiaosheng1_processed.mat` |
+**场景映射**:
 
-**注意**: 当前只有一个参数文件，三个场景暂时共享该文件。后续可为每个场景生成独立的参数文件。
+| Python场景名 | MATLAB场景名 | 期望参数文件 | 实际指向 |
+|--------------|-------------|-------------|---------|
+| tiaosheng | tiaosheng | `Best_Params_Result_tiaosheng.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| bobi | bobi | `Best_Params_Result_bobi.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| kaihe | kaihe | `Best_Params_Result_kaihe.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+
+**注意**:
+1. 三个场景暂时共享同一套优化参数
+2. 需要在matlab目录中创建符号链接（见附录9.1）
+3. 后续生成场景专用参数后，只需更新符号链接目标
 
 **切换逻辑**:
 ```python
@@ -560,18 +564,54 @@ eng.quit()
 
 ## 9. 附录
 
-### 9.1 MATLAB参数文件格式
+### 9.1 MATLAB参数文件格式与处理
+
+#### 实际参数文件
 
 当前可用的参数文件：
-```matlab
+```
 Best_Params_20260119dualtiaosheng1_processed.mat
 ├── Best_Para_HF (struct)
 └── Best_Para_ACC (struct)
 ```
 
-该文件对应`OnlineHeartRateSolver`中的场景名：`dualtiaosheng1`
+#### 文件名格式问题
 
-**注意**: 需要将场景名`dualtiaosheng1`映射到Python中的`tiaosheng`选项。
+**问题说明**:
+- `OnlineHeartRateSolver.m`第18行期望的文件名格式为：`Best_Params_Result_{scenario_name}.mat`
+- 实际文件名格式为：`Best_Params_20260119dualtiaosheng1_processed.mat`
+- 两者不匹配会导致参数加载失败，回退到默认`para_base`
+
+#### 解决方案（推荐）
+
+**方案1: 创建符号链接（Windows）**
+
+在`matlab`目录中以管理员身份运行：
+```cmd
+mklink Best_Params_Result_tiaosheng.mat Best_Params_20260119dualtiaosheng1_processed.mat
+```
+
+**方案2: 复制文件**
+
+```cmd
+copy Best_Params_20260119dualtiaosheng1_processed.mat Best_Params_Result_tiaosheng.mat
+```
+
+**方案3: 修改MATLAB代码（不推荐）**
+
+修改`OnlineHeartRateSolver.m`第18行的文件名生成逻辑以适应实际文件名格式。
+
+#### 实施建议
+
+为支持三个场景，建议创建以下文件：
+```
+matlab/
+├── Best_Params_Result_tiaosheng.mat  → 符号链接到 Best_Params_20260119dualtiaosheng1_processed.mat
+├── Best_Params_Result_bobi.mat       → 符号链接到 Best_Params_20260119dualtiaosheng1_processed.mat
+└── Best_Params_Result_kaihe.mat      → 符号链接到 Best_Params_20260119dualtiaosheng1_processed.mat
+```
+
+这样三个场景可以共享同一套参数，后续生成专用参数后只需更新对应的符号链接。
 
 ### 9.2 关键常量
 
@@ -588,11 +628,19 @@ MAX_TIMEOUT_COUNT = 3      # 连续超时次数
 
 ### 9.3 场景名称映射
 
-| Python显示 | MATLAB场景名 | 参数文件 |
-|-----------|-------------|---------|
-| tiaosheng (跳绳) | dualtiaosheng1 | Best_Params_20260119dualtiaosheng1_processed.mat |
-| bobi (波比跳) | dualtiaosheng1 | 共享（待生成专用参数） |
-| kaihe (开合跳) | dualtiaosheng1 | 共享（待生成专用参数） |
+**Python场景名 → MATLAB场景名 → 参数文件**
+
+| Python下拉框选项 | MATLAB场景名 | 期望参数文件 | 实际指向 |
+|-----------------|-------------|-------------|---------|
+| tiaosheng (跳绳) | tiaosheng | `Best_Params_Result_tiaosheng.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| bobi (波比跳) | bobi | `Best_Params_Result_bobi.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+| kaihe (开合跳) | kaihe | `Best_Params_Result_kaihe.mat` | 符号链接 → `Best_Params_20260119dualtiaosheng1_processed.mat` |
+
+**说明**:
+- Python场景名直接作为MATLAB的`scenario_name`参数传入
+- MATLAB代码会自动查找`Best_Params_Result_{scenario_name}.mat`文件
+- 通过符号链接，三个场景暂时共享同一套参数
+- 后续生成场景专用参数后，只需更新符号链接目标
 
 ---
 
@@ -602,8 +650,9 @@ MAX_TIMEOUT_COUNT = 3      # 连续超时次数
 |------|------|---------|
 | 1.0 | 2026-03-23 | 初始版本 |
 | 1.1 | 2026-03-23 | 修复审查发现的问题：参数文件名、MATLAB接口、线程安全、超时机制、CSV记录策略 |
+| 1.2 | 2026-03-23 | 解决参数文件名格式不匹配问题：添加符号链接方案，更新场景映射表 |
 
 ---
 
-**文档版本**: 1.1
+**文档版本**: 1.2
 **最后更新**: 2026-03-23
