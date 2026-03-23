@@ -513,6 +513,9 @@ class MainWindow(QMainWindow):
             if self.csv_file:
                 self.csv_file.close()
                 self.csv_file = None
+            if self.hr_csv_file:
+                self.hr_csv_file.close()
+                self.hr_csv_file = None
             self.btn_record.setText("开始记录")
             self.btn_record.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         else:
@@ -537,6 +540,25 @@ class MainWindow(QMainWindow):
                 self.is_recording = True
                 self.btn_record.setText("停止记录")
                 self.btn_record.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+
+                # 创建心率数据文件
+                hr_filename = f"HeartRate_{timestamp}.csv"
+                hr_filepath = os.path.join(folder, hr_filename)
+
+                try:
+                    self.hr_csv_file = open(hr_filepath, 'w', newline='')
+                    self.hr_csv_writer = csv.writer(self.hr_csv_file)
+                    # 心率文件表头
+                    self.hr_csv_writer.writerow(["Time(s)", "HR_HF(BPM)", "HR_ACC(BPM)", "Motion_State", "Scenario"])
+                    self.hr_start_time_record = time.time()
+                except Exception as e:
+                    QMessageBox.critical(self, "文件错误", f"无法创建心率文件: {e}")
+                    self.csv_file.close()
+                    self.csv_file = None
+                    return
+
+            except Exception as e:
+                QMessageBox.critical(self, "文件错误", f"无法创建文件: {e}")
             except Exception as e:
                 QMessageBox.critical(self, "文件错误", f"无法创建文件: {e}")
 
@@ -608,6 +630,14 @@ class MainWindow(QMainWindow):
 
         motion_str = "运动" if is_motion else "静息"
         self.lbl_motion.setText(f"状态: {motion_str}")
+
+        # 记录到CSV
+        if self.is_recording and self.hr_csv_writer:
+            elapsed = round(time.time() - self.hr_start_time_record, 3)
+            scenario = self.cb_scenario.currentText()
+            motion_int = 1 if is_motion else 0
+            self.hr_csv_writer.writerow([elapsed, round(hr_hf, 1), round(hr_acc, 1), motion_int, scenario])
+            self.hr_csv_file.flush()
 
         # 更新波形图数据
         elapsed = time.time() - self.hr_start_time
