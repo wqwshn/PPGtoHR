@@ -174,9 +174,11 @@ class MatlabWorkerThread(QThread):
 
         def worker():
             try:
-                hr_results, ready = self.solver.process_step(mat_data)
+                # 使用feval调用MATLAB对象方法: feval('method_name', obj, args..., nargout=N)
+                matlab_result = self.eng.feval('process_step', self.solver, mat_data, nargout=2)
+                ready = matlab_result[1]
                 if ready:
-                    result[0] = hr_results
+                    result[0] = matlab_result[0]
                     is_ready[0] = True
             except Exception as e:
                 exception[0] = e
