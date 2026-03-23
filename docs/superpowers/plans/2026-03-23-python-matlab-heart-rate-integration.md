@@ -599,8 +599,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 8: 在MainWindow中集成MatlabWorkerThread
 
 **文件:**
-- Modify: `python/getdata.py:1-30` (导入部分)
-- Modify: `python/getdata.py:150-200` (MainWindow.__init__)
+- Modify: `python/getdata.py` (导入部分，文件顶部)
+- Modify: `python/getdata.py` (MainWindow.__init__方法，在init_ui调用之前)
 
 **目的:** 在主窗口中初始化MATLAB工作线程
 
@@ -687,7 +687,7 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 9: 修改SerialReaderThread集成DataBuffer
 
 **文件:**
-- Modify: `python/getdata.py:17-150` (SerialReaderThread类)
+- Modify: `python/getdata.py` (SerialReaderThread类)
 
 **目的:** 让串口接收线程将数据写入共享的DataBuffer
 
@@ -754,8 +754,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 10: 添加心率显示UI
 
 **文件:**
-- Modify: `python/getdata.py:165-185` (初始化部分)
-- Modify: `python/getdata.py:270-355` (init_ui方法)
+- Modify: `python/getdata.py` (MainWindow.__init__方法，数据存储初始化部分)
+- Modify: `python/getdata.py` (MainWindow.init_ui方法，控制面板布局部分)
 
 **目的:** 创建心率显示区域和波形图
 
@@ -868,8 +868,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 11: 添加场景选择控件
 
 **文件:**
-- Modify: `python/getdata.py:270-355` (init_ui方法)
-- Modify: `python/getdata.py:390-430` (toggle_serial附近)
+- Modify: `python/getdata.py` (MainWindow.init_ui方法，控制面板布局部分)
+- Modify: `python/getdata.py` (MainWindow.toggle_serial方法，串口开关逻辑部分)
 
 **目的:** 创建场景选择UI和加载功能
 
@@ -999,8 +999,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ### Task 12: 实现双文件CSV记录
 
 **文件:**
-- Modify: `python/getdata.py:400-435` (toggle_record方法)
-- Modify: `python/getdata.py:435-465` (handle_new_data方法)
+- Modify: `python/getdata.py` (MainWindow.toggle_record方法，数据记录控制部分)
+- Modify: `python/getdata.py` (MainWindow.handle_new_data方法，数据处理部分)
 
 **目的:** 将心率数据单独记录到文件
 
@@ -1100,7 +1100,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 # tests/test_matlab_worker.py
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
+# 跨平台兼容的路径处理
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'python')))
 
 import time
 import threading
@@ -1355,3 +1356,28 @@ results.Final_HR_ACC         % scalar, Hz
 results.Motion_Flag_HF_Path  % boolean
 results.Motion_Flag_ACC_Path % boolean
 ```
+
+---
+
+## 实施注意事项
+
+根据计划审查结果，执行时请注意：
+
+1. **不要严格依赖行号**: 计划中的文件位置使用功能描述而非固定行号，根据实际代码结构定位修改位置。
+
+2. **跨平台兼容性**: 测试文件已使用`os.path.abspath`确保跨平台路径兼容。
+
+3. **MATLAB Engine线程安全**: Task 4的超时保护使用守护线程执行MATLAB调用，需验证MATLAB Engine是否支持线程调用。
+
+4. **属性访问**: Task 11中访问`self.matlab_worker.is_calculating`，该属性在Task 1中定义为public，可正常访问。
+
+5. **数据记录初始化**: Task 12中`self.hr_start_time_record`应在`toggle_record`方法创建心率文件时初始化。
+
+---
+
+## 计划修订记录
+
+| 版本 | 日期 | 修订内容 |
+|------|------|---------|
+| 1.0 | 2026-03-23 | 初始版本 |
+| 1.1 | 2026-03-23 | 根据审查反馈修复：移除行号引用，添加跨平台路径处理，添加实施注意事项 |
