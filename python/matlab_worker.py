@@ -139,3 +139,47 @@ class MatlabWorkerThread(QThread):
         mat_data = matlab.double(data_array.tolist())
 
         return mat_data
+
+    def _process_step_with_timeout(self, mat_data, timeout=2.0):
+        """
+        带超时保护的MATLAB计算调用
+
+        Args:
+            mat_data: MATLAB格式输入数据
+            timeout: 超时时间（秒）
+
+        Returns:
+            dict: {'results': hr_results, 'is_ready': bool}
+
+        Raises:
+            TimeoutError: 计算超时
+            Exception: MATLAB计算异常
+        """
+        result = [None]
+        exception = [None]
+        is_ready = [False]
+
+        def worker():
+            try:
+                hr_results, ready = self.solver.process_step(mat_data)
+                if ready:
+                    result[0] = hr_results
+                    is_ready[0] = True
+            except Exception as e:
+                exception[0] = e
+
+        # 创建守护线程执行MATLAB调用
+        thread = threading.Thread(target=worker)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout)
+
+        # 检查超时
+        if thread.is_alive():
+            raise TimeoutError("MATLAB计算超时")
+
+        # 检查异常
+        if exception[0]:
+            raise exception[0]
+
+        return {'results': result[0], 'is_ready': is_ready[0]}
