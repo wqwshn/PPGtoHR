@@ -135,6 +135,7 @@ class MatlabWorkerThread(QThread):
             matlab.double: 125x7矩阵，每行格式为 [PPG, HF1, HF2, HF3, ACCx, ACCy, ACCz]
             None: 数据不足
         """
+        import sys
         if self.data_buffer is None or len(self.data_buffer) < 125:
             return None
 
@@ -147,9 +148,17 @@ class MatlabWorkerThread(QThread):
         import numpy as np
         data_array = np.array(raw_data, dtype=np.float64)
 
+        # 调试：检查数据形状
+        sys.stdout.write(f"[DEBUG] data_array.shape: {data_array.shape}\n")
+        sys.stdout.flush()
+
         # 转换为MATLAB格式
         import matlab.engine
         mat_data = matlab.double(data_array.tolist())
+
+        # 调试：检查MATLAB数据形状
+        sys.stdout.write(f"[DEBUG] mat_data size: {len(mat_data)} x {len(mat_data[0]) if len(mat_data) > 0 else 0}\n")
+        sys.stdout.flush()
 
         return mat_data
 
