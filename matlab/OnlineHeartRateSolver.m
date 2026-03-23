@@ -13,13 +13,14 @@ classdef OnlineHeartRateSolver < handle
             % 构造函数
             obj.Para_HF = para_base;
             obj.Para_ACC = para_base;
-            
+
             % 1. 加载贝叶斯优化出的双路参数
             mat_filename = sprintf('Best_Params_Result_%s.mat', scenario_name);
             if isfile(mat_filename)
                 load(mat_filename, 'Best_Para_HF', 'Best_Para_ACC');
-                obj.Para_HF = Best_Para_HF;
-                obj.Para_ACC = Best_Para_ACC;
+                % 合并加载的参数与基础参数，确保所有字段都存在
+                obj.Para_HF = obj.merge_params(para_base, Best_Para_HF);
+                obj.Para_ACC = obj.merge_params(para_base, Best_Para_ACC);
                 fprintf('成功加载 [%s] 场景的双路最优参数。\n', scenario_name);
             else
                 warning('未找到 %s 参数文件，双路均将使用基础参数运行。', scenario_name);
@@ -102,8 +103,18 @@ classdef OnlineHeartRateSolver < handle
             end
         end
     end
-    
+
     methods (Access = private)
+        function merged = merge_params(obj, base_params, loaded_params)
+            % 合并参数：使用loaded_params的值，但保留base_params中缺失的字段
+            merged = base_params;
+            loaded_fields = fieldnames(loaded_params);
+            for i = 1:length(loaded_fields)
+                field = loaded_fields{i};
+                merged.(field) = loaded_params.(field);
+            end
+        end
+
         function out = compute_single_path(obj, raw_win, para, path_type)
             % 核心解算：针对特定的参数集合执行完整算法流程
             Fs = para.Fs_Target;
