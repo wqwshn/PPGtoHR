@@ -310,6 +310,16 @@ function est_freq = Helper_Process_Spectrum(sig_in, sig_penalty_ref, Fs, para, t
     end
     
     % 4. 绝对物理边界钳位 (防止追踪异常导致输出偏离生理极限)
-    % range_hz 为传入的绝对范围参数，如 [0.67, 3.0]
-    est_freq = min(max(est_freq, range_hz(1)), range_hz(2));
+    % range_hz 可能是标量值 (如 0.6667) 或数组 (如 [0.67, 3.0])
+    % 兼容处理：如果是标量，使用默认范围 [0.67, 3.0]
+    if isscalar(range_hz)
+        % 标量值情况：使用标量值作为中心，或使用默认生理范围
+        min_hr = 0.67;  % 40 BPM
+        max_hr = 3.0;   % 180 BPM
+    else
+        % 数组情况：使用传入的范围
+        min_hr = range_hz(1);
+        max_hr = range_hz(2);
+    end
+    est_freq = min(max(est_freq, min_hr), max_hr);
 end
