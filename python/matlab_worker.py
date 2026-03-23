@@ -18,6 +18,7 @@ class MatlabWorkerThread(QThread):
     hr_ready = pyqtSignal(float, float, bool)  # HR_HF, HR_ACC, is_motion
     error_occurred = pyqtSignal(str)
     status_changed = pyqtSignal(str)
+    calibration_status = pyqtSignal(bool, float, str)  # is_calibrated, progress_percent, message
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -112,7 +113,7 @@ class MatlabWorkerThread(QThread):
             "'Fs_Target',100,"
             "'HR_Range_Hz',[0.67,3.0],"
             "'Smooth_Win_Len',5,"
-            "'Calib_Time',60,"
+            "'Calib_Time',30,"
             "'Motion_Th_Scale',3,"
             "'Spec_Penalty_Enable',1,"
             "'Spec_Penalty_Weight',0.2,"
@@ -278,7 +279,10 @@ class MatlabWorkerThread(QThread):
                 sys.stdout.write(f"[MATLAB] 结果解析失败: {str(e)}\n")
                 sys.stdout.flush()
                 self.error_occurred.emit(f"结果解析失败: {str(e)}")
-        else:
+
+        # 4. 获取并更新校准状态
+        self._update_calibration_status()
+        if result is None or not result.get('is_ready', False):
             sys.stdout.write("[MATLAB] 结果未就绪 (is_ready=False)\n")
             sys.stdout.flush()
 
@@ -315,3 +319,47 @@ class MatlabWorkerThread(QThread):
                 self.eng.quit()
         except:
             pass
+
+    def _update_calibration_status(self):
+        """获取并更新校准状态"""
+        if self.solver is None:
+            return
+
+        try:
+            # 获取MATLAB求解器的状态
+            import matlab.engine
+            state = self.eng.get_state(self.solver)
+
+            # 检查HF和ACC路径的校准状态
+            is_calib_hf = bool(state['Is_Calibrated_HF'])
+            is_calib_acc = bool(state['Is_Calibrated_ACC'])
+
+            # 计算校准进度
+            calib_time = float(state['Calib_Time'])
+            fs = float(state['Fs_Origin'])
+
+            # 获取当前校准缓冲区长度
+            calib_len_hf = float(state['Calib_Buffer_HF_Size'])
+            calib_len_acc = float(state['Calib_Buffer_ACC_Size'])
+
+            # 计算进度百分比 (取两条路径的最大值)
+            required_len = calib_time * fs
+            progress_hf = min(100.0, (calib_len_hf / required_len) * 100) if required_len > 0 else 0
+            progress_acc = min(100.0, (calib_len_acc / required_len) * 100) if required_len > 0 else 0
+            progress = max(progress_hf, progress_acc)
+
+            # 判断是否完成校准
+            is_calibrated = is_calib_hf and is_calib_acc
+
+            # 生成状态消息
+            if is_calibrated:
+                message = "校准完成"
+            else:
+                message = f"校准中... {progress:.0f}%"
+
+            # 发送校准状态信号
+            self.calibration_status.emit(is_calibrated, progress, message)
+
+        except Exception as e:
+            sys.stdout.write(f"[MATLAB] 获取校准状态失败: {str(e)}\n")
+            sys.stdout.flush()

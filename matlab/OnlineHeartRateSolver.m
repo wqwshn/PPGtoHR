@@ -57,50 +57,61 @@ classdef OnlineHeartRateSolver < handle
             % 接收流式数据并触发计算
             hr_results = struct();
             is_ready = false;
-            
+
             if isempty(new_raw_data), return; end
-            
+
             % 拼接到缓存
             obj.State.RawBuffer = [obj.State.RawBuffer; new_raw_data];
-            
+
             % 当满足 8 秒窗口时触发解算
             if size(obj.State.RawBuffer, 1) >= obj.State.Max_Buffer_Len
                 win_data = obj.State.RawBuffer(1:obj.State.Max_Buffer_Len, :);
                 obj.State.Times_Count = obj.State.Times_Count + 1;
-                
+
                 % ==========================================
                 % 分别执行两条独立的最优参数路径
                 % ==========================================
                 % 路径 1: 基于 HF 参数的解算
                 out_HF = obj.compute_single_path(win_data, obj.Para_HF, 'HF');
-                
+
                 % 路径 2: 基于 ACC 参数的解算
                 out_ACC = obj.compute_single_path(win_data, obj.Para_ACC, 'ACC');
-                
+
                 % ==========================================
                 % 平滑后处理
                 % ==========================================
                 obj.State.Smooth_Queue_HF = [obj.State.Smooth_Queue_HF, out_HF.Fusion_HR];
                 obj.State.Smooth_Queue_ACC = [obj.State.Smooth_Queue_ACC, out_ACC.Fusion_HR];
-                
+
                 if length(obj.State.Smooth_Queue_HF) > obj.Para_HF.Smooth_Win_Len
                     obj.State.Smooth_Queue_HF(1) = [];
                 end
                 if length(obj.State.Smooth_Queue_ACC) > obj.Para_ACC.Smooth_Win_Len
                     obj.State.Smooth_Queue_ACC(1) = [];
                 end
-                
+
                 % 打包最终输出
                 hr_results.Final_HR_HF  = median(obj.State.Smooth_Queue_HF);
                 hr_results.Final_HR_ACC = median(obj.State.Smooth_Queue_ACC);
                 hr_results.Motion_Flag_HF_Path = out_HF.Is_Motion;
                 hr_results.Motion_Flag_ACC_Path = out_ACC.Is_Motion;
-                
+
                 is_ready = true;
-                
+
                 % 滑动窗口：剔除最旧的 1 秒数据
                 obj.State.RawBuffer(1:obj.State.Step_Len, :) = [];
             end
+        end
+
+        function state = get_state(obj)
+            % 获取当前状态（用于Python界面显示）
+            state = struct();
+            state.Is_Calibrated_HF = obj.State.Is_Calibrated_HF;
+            state.Is_Calibrated_ACC = obj.State.Is_Calibrated_ACC;
+            state.Calib_Buffer_HF_Size = length(obj.State.Calib_Buffer_HF);
+            state.Calib_Buffer_ACC_Size = length(obj.State.Calib_Buffer_ACC);
+            state.Calib_Time = obj.Para_HF.Calib_Time;
+            state.Fs_Origin = obj.State.Fs_Origin;
         end
     end
 

@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
             self.matlab_worker.hr_ready.connect(self.handle_hr_result)
             self.matlab_worker.error_occurred.connect(self.handle_matlab_error)
             self.matlab_worker.status_changed.connect(self.handle_matlab_status)
+            self.matlab_worker.calibration_status.connect(self.handle_calibration_status)  # 连接校准状态信号
             self.matlab_worker.start()  # 启动QThread，这会执行run()方法
             self.matlab_available = True
         except ImportError:
@@ -305,7 +306,24 @@ class MainWindow(QMainWindow):
         record_vbox.addWidget(self.btn_record)
         record_group.setLayout(record_vbox)
 
-        # 4. 心率监测 (新增)
+        # 4. 静息校准状态 (新增)
+        calib_group = QGroupBox("静息校准状态")
+        calib_vbox = QVBoxLayout()
+
+        # 校准提示标签
+        self.lbl_calib_status = QLabel("状态: 等待启动")
+        self.lbl_calib_status.setStyleSheet("font-weight: bold; color: #FF9800; font-size: 14px;")
+        self.lbl_calib_progress = QLabel("进度: 0%")
+        self.lbl_calib_progress.setStyleSheet("color: #2196F3; font-size: 14px;")
+        self.lbl_calib_hint = QLabel("提示: 请保持静坐状态30秒进行校准")
+        self.lbl_calib_hint.setStyleSheet("color: #757575; font-size: 12px;")
+
+        calib_vbox.addWidget(self.lbl_calib_status)
+        calib_vbox.addWidget(self.lbl_calib_progress)
+        calib_vbox.addWidget(self.lbl_calib_hint)
+        calib_group.setLayout(calib_vbox)
+
+        # 5. 心率监测
         hr_group = QGroupBox("心率监测")
         hr_vbox = QVBoxLayout()
 
@@ -367,6 +385,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(status_group)
         control_layout.addWidget(serial_group)
         control_layout.addWidget(record_group)
+        control_layout.addWidget(calib_group)
         control_layout.addWidget(hr_group)
         control_layout.addWidget(algo_group)
         control_layout.addStretch()
@@ -653,6 +672,20 @@ class MainWindow(QMainWindow):
     def handle_matlab_status(self, status_msg):
         """处理MATLAB状态更新"""
         print(f"MATLAB状态: {status_msg}")
+
+    def handle_calibration_status(self, is_calibrated, progress, message):
+        """处理静息校准状态更新"""
+        self.lbl_calib_status.setText(f"状态: {message}")
+        self.lbl_calib_progress.setText(f"进度: {progress:.0f}%")
+
+        if is_calibrated:
+            self.lbl_calib_status.setStyleSheet("font-weight: bold; color: #4CAF50; font-size: 14px;")
+            self.lbl_calib_hint.setText("校准已完成！可以开始运动测试")
+            self.lbl_calib_hint.setStyleSheet("color: #4CAF50; font-size: 12px;")
+        else:
+            self.lbl_calib_status.setStyleSheet("font-weight: bold; color: #FF9800; font-size: 14px;")
+            self.lbl_calib_hint.setText("提示: 请保持静坐状态进行校准")
+            self.lbl_calib_hint.setStyleSheet("color: #757575; font-size: 12px;")
 
     def load_scenario(self):
         """加载选定的场景参数"""
