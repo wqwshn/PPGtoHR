@@ -176,6 +176,10 @@ class MainWindow(QMainWindow):
         # 采样率统计变量
         self.packet_count = 0
 
+        # 当前工作模式：'hr' = 心率模式, 'spo2' = 血氧模式
+        self.current_mode = 'hr'  # 默认心率模式
+        self.last_mode = 'hr'  # 上一次的模式
+
         # MATLAB工作线程初始化
         self.matlab_worker = None
         self.matlab_available = False
@@ -189,6 +193,7 @@ class MainWindow(QMainWindow):
             self.matlab_worker.set_data_buffer(self.data_buffer, self.data_lock)
             self.matlab_worker.hr_ready.connect(self.handle_hr_result)
             self.matlab_worker.error_occurred.connect(self.handle_matlab_error)
+            self.matlab_worker.fatal_error.connect(self.handle_matlab_error)  # 致命错误也连接到同一个处理函数
             self.matlab_worker.status_changed.connect(self.handle_matlab_status)
             self.matlab_worker.calibration_status.connect(self.handle_calibration_status)  # 连接校准状态信号
             self.matlab_worker.start()  # 启动QThread，这会执行run()方法
@@ -327,6 +332,13 @@ class MainWindow(QMainWindow):
         hr_group = QGroupBox("心率监测")
         hr_vbox = QVBoxLayout()
 
+        # 心率计算开关
+        self.btn_hr_toggle = QPushButton("启动心率计算")
+        self.btn_hr_toggle.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold;")
+        self.btn_hr_toggle.clicked.connect(self.toggle_hr_calculation)
+        self.btn_hr_toggle.setEnabled(self.matlab_available)
+        hr_vbox.addWidget(self.btn_hr_toggle)
+
         # 数值显示
         hr_info_layout = QHBoxLayout()
         self.lbl_hr_hf = QLabel("HF: -- BPM")
@@ -340,18 +352,6 @@ class MainWindow(QMainWindow):
         hr_info_layout.addWidget(self.lbl_motion)
 
         hr_vbox.addLayout(hr_info_layout)
-
-        # 心率波形图
-        self.plot_w_hr = pg.PlotWidget(title="心率趋势 (最近60秒)")
-        self.plot_w_hr.showGrid(x=True, y=True)
-        self.plot_w_hr.setYRange(40, 200)
-        self.plot_w_hr.setLabel('left', '心率', units='BPM')
-        self.plot_w_hr.setLabel('bottom', '时间', units='s')
-        self.curve_hr_hf = self.plot_w_hr.plot(pen=pg.mkPen('g', width=2), name="HF")
-        self.curve_hr_acc = self.plot_w_hr.plot(pen=pg.mkPen((150,150,150), width=1, style=Qt.DashLine), name="ACC")
-        self.plot_w_hr.addLegend()
-
-        hr_vbox.addWidget(self.plot_w_hr)
         hr_group.setLayout(hr_vbox)
 
         # 5. 算法设置 (新增)
@@ -382,12 +382,28 @@ class MainWindow(QMainWindow):
 
         algo_group.setLayout(algo_vbox)
 
+        # 6. 界面控制
+        ui_group = QGroupBox("界面控制")
+        ui_vbox = QVBoxLayout()
+
+        # 模式切换按钮
+        self.btn_switch_mode = QPushButton("切换到血氧模式")
+        self.btn_switch_mode.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        self.btn_switch_mode.clicked.connect(self.manual_switch_mode)
+        ui_vbox.addWidget(self.btn_switch_mode)
+
+        self.btn_clear_plots = QPushButton("清空曲线显示")
+        self.btn_clear_plots.clicked.connect(self.clear_all_plots)
+        ui_vbox.addWidget(self.btn_clear_plots)
+        ui_group.setLayout(ui_vbox)
+
         control_layout.addWidget(status_group)
         control_layout.addWidget(serial_group)
         control_layout.addWidget(record_group)
         control_layout.addWidget(calib_group)
         control_layout.addWidget(hr_group)
         control_layout.addWidget(algo_group)
+        control_layout.addWidget(ui_group)
         control_layout.addStretch()
 
         # --- 右侧波形显示面板 ---
@@ -396,80 +412,129 @@ class MainWindow(QMainWindow):
         pg.setConfigOption('background', 'w')
         pg.setConfigOption('foreground', 'k')
 
-        # 1. PPG 绘图区域 (左右分栏)
-        ppg_widget = QWidget()
-        ppg_layout = QHBoxLayout()
-        ppg_layout.setContentsMargins(0, 0, 0, 0)
-        ppg_widget.setLayout(ppg_layout)
+        # ==================== 心率模式布局 ====================
+        self.hr_mode_widget = QWidget()
+        hr_mode_layout = QHBoxLayout()  # 改为水平布局
+        hr_mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.hr_mode_widget.setLayout(hr_mode_layout)
 
-        # 左侧：绿光 PPG
+        # PPG绿光曲线（左侧）
         self.plot_w_ppg_g = pg.PlotWidget(title="PPG 绿光 (Green)")
         self.plot_w_ppg_g.showGrid(x=True, y=True)
         self.curve_ppg_g = self.plot_w_ppg_g.plot(pen=pg.mkPen('g', width=2))
-        ppg_layout.addWidget(self.plot_w_ppg_g)
+        hr_mode_layout.addWidget(self.plot_w_ppg_g, 1)  # stretch=1，占一半空间
 
-        # 右侧：红光和红外光 (上下排列)
-        ppg_right_widget = QWidget()
-        ppg_right_layout = QVBoxLayout()
-        ppg_right_layout.setContentsMargins(0, 0, 0, 0)
-        ppg_right_widget.setLayout(ppg_right_layout)
+        # 心率曲线（右侧）
+        self.plot_w_hr_mode = pg.PlotWidget(title="心率趋势 (最近60秒)")
+        self.plot_w_hr_mode.showGrid(x=True, y=True)
+        self.plot_w_hr_mode.setYRange(40, 200)
+        self.plot_w_hr_mode.setLabel('left', '心率', units='BPM')
+        self.plot_w_hr_mode.setLabel('bottom', '时间', units='s')
+        self.curve_hr_hf_mode = self.plot_w_hr_mode.plot(pen=pg.mkPen('g', width=2), name="HF")
+        self.curve_hr_acc_mode = self.plot_w_hr_mode.plot(pen=pg.mkPen((150,150,150), width=1, style=Qt.DashLine), name="ACC")
+        self.plot_w_hr_mode.addLegend()
+        hr_mode_layout.addWidget(self.plot_w_hr_mode, 1)  # stretch=1，占一半空间
+
+        # ==================== 血氧模式布局 ====================
+        self.spo2_mode_widget = QWidget()
+        spo2_mode_layout = QHBoxLayout()  # 改为水平布局：左边PPG，右边温度+血氧
+        spo2_mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.spo2_mode_widget.setLayout(spo2_mode_layout)
+
+        # 左侧：红光和红外光上下排列
+        ppg_ri_widget = QWidget()
+        ppg_ri_layout = QVBoxLayout()
+        ppg_ri_layout.setContentsMargins(0, 0, 0, 0)
+        ppg_ri_widget.setLayout(ppg_ri_layout)
 
         self.plot_w_ppg_r = pg.PlotWidget(title="PPG 红光 (Red)")
         self.plot_w_ppg_r.showGrid(x=True, y=True)
         self.curve_ppg_r = self.plot_w_ppg_r.plot(pen=pg.mkPen('r', width=2))
-        ppg_right_layout.addWidget(self.plot_w_ppg_r)
+        ppg_ri_layout.addWidget(self.plot_w_ppg_r)
 
         self.plot_w_ppg_ir = pg.PlotWidget(title="PPG 红外光 (IR)")
         self.plot_w_ppg_ir.showGrid(x=True, y=True)
         self.curve_ppg_ir = self.plot_w_ppg_ir.plot(pen=pg.mkPen('b', width=2))
-        ppg_right_layout.addWidget(self.plot_w_ppg_ir)
+        ppg_ri_layout.addWidget(self.plot_w_ppg_ir)
 
-        ppg_layout.addWidget(ppg_right_widget)
-        plot_layout.addWidget(ppg_widget, 2)
+        spo2_mode_layout.addWidget(ppg_ri_widget, 1)  # 左侧占一半
 
-        # 2. 温度监控绘图
+        # 右侧：温度和血氧上下排列
+        temp_spo2_widget = QWidget()
+        temp_spo2_layout = QVBoxLayout()
+        temp_spo2_layout.setContentsMargins(0, 0, 0, 0)
+        temp_spo2_widget.setLayout(temp_spo2_layout)
+
+        # 温度曲线（上面1/3）
         self.plot_w_temp = pg.PlotWidget(title="芯片结温实时监控 (℃)")
         self.plot_w_temp.showGrid(x=True, y=True)
         self.curve_temp = self.plot_w_temp.plot(pen=pg.mkPen(color=(200, 100, 0), width=2))
-        plot_layout.addWidget(self.plot_w_temp, 1)
+        temp_spo2_layout.addWidget(self.plot_w_temp, 1)
 
-        # 3. ADC 热膜绘图 (2x2 网格，桥顶在上，桥中在下)
-        adc_widget = QWidget()
-        adc_layout = QGridLayout()
-        adc_layout.setContentsMargins(0, 0, 0, 0)
-        adc_widget.setLayout(adc_layout)
+        # 血氧饱和度曲线（下面2/3）
+        self.plot_w_spo2 = pg.PlotWidget(title="血氧饱和度 SpO2 (%) - 预留")
+        self.plot_w_spo2.showGrid(x=True, y=True)
+        self.plot_w_spo2.setYRange(70, 100)
+        self.plot_w_spo2.setLabel('left', 'SpO2', units='%')
+        self.curve_spo2 = self.plot_w_spo2.plot(pen=pg.mkPen('m', width=2))
+        temp_spo2_layout.addWidget(self.plot_w_spo2, 2)
+
+        spo2_mode_layout.addWidget(temp_spo2_widget, 1)  # 右侧占一半
+
+        # ==================== 通用曲线（始终显示） ====================
+        # 使用堆叠布局实现模式切换
+        from PyQt5.QtWidgets import QStackedWidget
+        self.mode_stack = QStackedWidget()
+        self.mode_stack.addWidget(self.hr_mode_widget)
+        self.mode_stack.addWidget(self.spo2_mode_widget)
+        # 默认显示心率模式
+        self.mode_stack.setCurrentIndex(0)
+        plot_layout.addWidget(self.mode_stack, 3)  # PPG板块（最上面）
+
+        # Ut 桥顶电压绘图 (水平并排)
+        ut_widget = QWidget()
+        ut_layout = QHBoxLayout()
+        ut_layout.setContentsMargins(0, 0, 0, 0)
+        ut_widget.setLayout(ut_layout)
 
         self.plot_w_ut1 = pg.PlotWidget(title="热膜桥顶1 (Ut1) - mV")
         self.plot_w_ut1.showGrid(x=True, y=True)
         self.curve_Ut1 = self.plot_w_ut1.plot(pen=pg.mkPen(color=(255, 165, 0), width=1.5))
+        ut_layout.addWidget(self.plot_w_ut1)
 
         self.plot_w_ut2 = pg.PlotWidget(title="热膜桥顶2 (Ut2) - mV")
         self.plot_w_ut2.showGrid(x=True, y=True)
         self.curve_Ut2 = self.plot_w_ut2.plot(pen=pg.mkPen('m', width=1.5))
+        ut_layout.addWidget(self.plot_w_ut2)
+
+        plot_layout.addWidget(ut_widget, 2)  # Ut桥顶板块
+
+        # Uc 桥中电压绘图 (水平并排)
+        uc_widget = QWidget()
+        uc_layout = QHBoxLayout()
+        uc_layout.setContentsMargins(0, 0, 0, 0)
+        uc_widget.setLayout(uc_layout)
 
         self.plot_w_uc1 = pg.PlotWidget(title="热膜桥中1 (Uc1) - mV")
         self.plot_w_uc1.showGrid(x=True, y=True)
         self.curve_Uc1 = self.plot_w_uc1.plot(pen=pg.mkPen('r', width=1.5))
+        uc_layout.addWidget(self.plot_w_uc1)
 
         self.plot_w_uc2 = pg.PlotWidget(title="热膜桥中2 (Uc2) - mV")
         self.plot_w_uc2.showGrid(x=True, y=True)
         self.curve_Uc2 = self.plot_w_uc2.plot(pen=pg.mkPen('b', width=1.5))
+        uc_layout.addWidget(self.plot_w_uc2)
 
-        adc_layout.addWidget(self.plot_w_ut1, 0, 0)
-        adc_layout.addWidget(self.plot_w_ut2, 0, 1)
-        adc_layout.addWidget(self.plot_w_uc1, 1, 0)
-        adc_layout.addWidget(self.plot_w_uc2, 1, 1)
-        
-        plot_layout.addWidget(adc_widget, 3) 
+        plot_layout.addWidget(uc_widget, 2)  # Uc桥中板块
 
-        # 4. MIMU 三轴加速绘图
+        # MIMU 三轴加速绘图（最底部）
         self.plot_w_acc = pg.PlotWidget(title="三轴加速度计 (Acc_x, Acc_y, Acc_z)")
         self.plot_w_acc.showGrid(x=True, y=True)
         self.plot_w_acc.addLegend()
         self.curve_accx = self.plot_w_acc.plot(pen=pg.mkPen('r', width=1.5), name="Acc X")
         self.curve_accy = self.plot_w_acc.plot(pen=pg.mkPen('g', width=1.5), name="Acc Y")
         self.curve_accz = self.plot_w_acc.plot(pen=pg.mkPen('b', width=1.5), name="Acc Z")
-        plot_layout.addWidget(self.plot_w_acc, 2)
+        plot_layout.addWidget(self.plot_w_acc, 1)  # ACC板块（最底部）
 
         main_layout.addLayout(control_layout, 1)
         main_layout.addLayout(plot_layout, 5)
@@ -519,9 +584,117 @@ class MainWindow(QMainWindow):
             self.cb_ports.setEnabled(False)
             self.cb_baudrate.setEnabled(False)
 
-            # 启动MATLAB计算
-            if self.matlab_available:
-                self.matlab_worker.start_calculation()
+            # 不再自动启动MATLAB计算，需要用户手动点击启动心率计算按钮
+
+    def toggle_hr_calculation(self):
+        """切换心率计算状态"""
+        if not self.matlab_available or self.matlab_worker is None:
+            QMessageBox.warning(self, "提示", "MATLAB不可用，无法启动心率计算")
+            return
+
+        if self.matlab_worker.is_calculating:
+            # 停止计算
+            self.matlab_worker.stop_calculation()
+            self.btn_hr_toggle.setText("启动心率计算")
+            self.btn_hr_toggle.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold;")
+        else:
+            # 启动计算
+            self.matlab_worker.start_calculation()
+            self.btn_hr_toggle.setText("停止心率计算")
+            self.btn_hr_toggle.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+
+    def clear_all_plots(self):
+        """清空所有曲线显示"""
+        # 清空所有数据缓冲区
+        self.data_Uc1.clear()
+        self.data_Uc2.clear()
+        self.data_Ut1.clear()
+        self.data_Ut2.clear()
+        self.data_Accx.clear()
+        self.data_Accy.clear()
+        self.data_Accz.clear()
+        self.data_ppg_g.clear()
+        self.data_ppg_r.clear()
+        self.data_ppg_ir.clear()
+        self.data_temp.clear()
+        self.data_hr_hf.clear()
+        self.data_hr_acc.clear()
+        self.data_time.clear()
+
+        # 重置心率起始时间
+        self.hr_start_time = time.time()
+
+        # 清空图表显示
+        self.curve_ppg_g.setData([])
+        self.curve_ppg_r.setData([])
+        self.curve_ppg_ir.setData([])
+        self.curve_temp.setData([])
+        self.curve_Uc1.setData([])
+        self.curve_Uc2.setData([])
+        self.curve_Ut1.setData([])
+        self.curve_Ut2.setData([])
+        self.curve_accx.setData([])
+        self.curve_accy.setData([])
+        self.curve_accz.setData([])
+        self.curve_hr_hf.setData([])
+        self.curve_hr_acc.setData([])
+        # 清空心率模式特有的曲线
+        self.curve_hr_hf_mode.setData([])
+        self.curve_hr_acc_mode.setData([])
+        # 清空血氧模式特有的曲线
+        self.curve_spo2.setData([])
+
+        # 重置心率显示
+        self.lbl_hr_hf.setText("HF: -- BPM")
+        self.lbl_hr_acc.setText("ACC: -- BPM")
+        self.lbl_motion.setText("状态: --")
+
+    def switch_display_mode(self, mode_str):
+        """根据串口接收的数据模式切换显示布局
+
+        Args:
+            mode_str: 模式字符串，包含"心率模式"或"血氧模式"
+        """
+        if "心率模式" in mode_str:
+            target_mode = 'hr'
+        elif "血氧模式" in mode_str:
+            target_mode = 'spo2'
+        else:
+            return  # 未识别的模式，不切换
+
+        # 仅在模式真正改变时才切换
+        if target_mode != self.current_mode:
+            self.current_mode = target_mode
+            if target_mode == 'hr':
+                self.mode_stack.setCurrentIndex(0)  # 显示心率模式布局
+                self.btn_switch_mode.setText("切换到血氧模式")
+            else:
+                self.mode_stack.setCurrentIndex(1)  # 显示血氧模式布局
+                self.btn_switch_mode.setText("切换到心率模式")
+
+            # 更新状态标签显示
+            self.lbl_mode.setText(f"当前模式: {mode_str}")
+
+    def get_current_display_mode(self):
+        """获取当前显示模式"""
+        return self.current_mode
+
+    def manual_switch_mode(self):
+        """手动切换显示模式"""
+        if self.current_mode == 'hr':
+            # 切换到血氧模式
+            self.current_mode = 'spo2'
+            self.mode_stack.setCurrentIndex(1)
+            self.btn_switch_mode.setText("切换到心率模式")
+            # 更新状态标签
+            self.lbl_mode.setText("当前模式: 血氧模式 (红光+红外) [手动切换]")
+        else:
+            # 切换到心率模式
+            self.current_mode = 'hr'
+            self.mode_stack.setCurrentIndex(0)
+            self.btn_switch_mode.setText("切换到血氧模式")
+            # 更新状态标签
+            self.lbl_mode.setText("当前模式: 心率模式 (单绿光) [手动切换]")
 
     def handle_serial_error(self, err_msg):
         QMessageBox.critical(self, "串口断开", err_msg)
@@ -585,7 +758,8 @@ class MainWindow(QMainWindow):
     def handle_new_data(self, Uc1, Uc2, Ut1, Ut2, Accx, Accy, Accz, ppg_g, ppg_r, ppg_ir, temp, mode_str, loss_rate):
         # 更新采样统计计数与 UI 标签
         self.packet_count += 1
-        self.lbl_mode.setText(f"当前模式: {mode_str}")
+        # 调用模式切换函数，自动检测并切换显示布局
+        self.switch_display_mode(mode_str)
         self.lbl_loss.setText(f"丢包率: {loss_rate:.2f}%")
 
         self.data_Uc1.append(Uc1)
@@ -620,27 +794,28 @@ class MainWindow(QMainWindow):
 
     def update_plots(self):
         if len(self.data_Uc1) > 0:
-            # 渲染多波长 PPG
-            self.curve_ppg_g.setData(list(self.data_ppg_g))
-            self.curve_ppg_r.setData(list(self.data_ppg_r))
-            self.curve_ppg_ir.setData(list(self.data_ppg_ir))
-            
-            # 渲染温度
-            self.curve_temp.setData(list(self.data_temp))
+            # 根据当前模式更新对应的曲线
+            if self.current_mode == 'hr':
+                # 心率模式：更新PPG绿光曲线和心率曲线
+                self.curve_ppg_g.setData(list(self.data_ppg_g))
+                if len(self.data_time) > 0:
+                    self.curve_hr_hf_mode.setData(list(self.data_time), list(self.data_hr_hf))
+                    self.curve_hr_acc_mode.setData(list(self.data_time), list(self.data_hr_acc))
+            else:
+                # 血氧模式：更新红光、红外光、温度曲线
+                self.curve_ppg_r.setData(list(self.data_ppg_r))
+                self.curve_ppg_ir.setData(list(self.data_ppg_ir))
+                self.curve_temp.setData(list(self.data_temp))
 
+            # 通用曲线（所有模式都更新）
             self.curve_Uc1.setData(list(self.data_Uc1))
             self.curve_Uc2.setData(list(self.data_Uc2))
             self.curve_Ut1.setData(list(self.data_Ut1))
             self.curve_Ut2.setData(list(self.data_Ut2))
-            
+
             self.curve_accx.setData(list(self.data_Accx))
             self.curve_accy.setData(list(self.data_Accy))
             self.curve_accz.setData(list(self.data_Accz))
-
-            # 更新心率曲线
-            if len(self.data_time) > 0:
-                self.curve_hr_hf.setData(list(self.data_time), list(self.data_hr_hf))
-                self.curve_hr_acc.setData(list(self.data_time), list(self.data_hr_acc))
 
     def handle_hr_result(self, hr_hf, hr_acc, is_motion):
         """处理心率计算结果"""
@@ -666,8 +841,27 @@ class MainWindow(QMainWindow):
         self.data_time.append(elapsed)
 
     def handle_matlab_error(self, error_msg):
-        """处理MATLAB错误"""
+        """处理MATLAB错误 - 当MATLAB计算出错时关闭串口接收"""
         QMessageBox.warning(self, "MATLAB错误", error_msg)
+
+        # 立刻停止MATLAB计算
+        if self.matlab_worker and self.matlab_worker.is_calculating:
+            self.matlab_worker.stop_calculation()
+
+        # 关闭串口接收
+        if self.serial_thread and self.serial_thread.is_running:
+            self.serial_thread.stop()
+            self.btn_connect.setText("打开串口")
+            self.btn_connect.setStyleSheet("")
+            self.cb_ports.setEnabled(True)
+            self.cb_baudrate.setEnabled(True)
+            self.lbl_mode.setText("当前模式: 离线")
+            self.lbl_rate.setText("采样率: 0 Hz")
+            self.lbl_loss.setText("丢包率: 0.00%")
+
+        # 如果正在记录，停止记录
+        if self.is_recording:
+            self.toggle_record()
 
     def handle_matlab_status(self, status_msg):
         """处理MATLAB状态更新"""
@@ -675,8 +869,11 @@ class MainWindow(QMainWindow):
 
     def handle_calibration_status(self, is_calibrated, progress, message):
         """处理静息校准状态更新"""
+        # 当校准完成时，强制显示100%进度
+        display_progress = 100.0 if is_calibrated else progress
+
         self.lbl_calib_status.setText(f"状态: {message}")
-        self.lbl_calib_progress.setText(f"进度: {progress:.0f}%")
+        self.lbl_calib_progress.setText(f"进度: {display_progress:.0f}%")
 
         if is_calibrated:
             self.lbl_calib_status.setStyleSheet("font-weight: bold; color: #4CAF50; font-size: 14px;")
