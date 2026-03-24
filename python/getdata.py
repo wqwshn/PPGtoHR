@@ -525,7 +525,7 @@ class MainWindow(QMainWindow):
         self.curve_Uc2 = self.plot_w_uc2.plot(pen=pg.mkPen('b', width=1.5))
         uc_layout.addWidget(self.plot_w_uc2)
 
-        plot_layout.addWidget(uc_widget, 2)  # Uc桥中板块
+        plot_layout.addWidget(uc_widget, 1)  # Uc桥中板块（高度缩减1/2）
 
         # MIMU 三轴加速绘图（最底部）
         self.plot_w_acc = pg.PlotWidget(title="三轴加速度计 (Acc_x, Acc_y, Acc_z)")
@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
         self.curve_accx = self.plot_w_acc.plot(pen=pg.mkPen('r', width=1.5), name="Acc X")
         self.curve_accy = self.plot_w_acc.plot(pen=pg.mkPen('g', width=1.5), name="Acc Y")
         self.curve_accz = self.plot_w_acc.plot(pen=pg.mkPen('b', width=1.5), name="Acc Z")
-        plot_layout.addWidget(self.plot_w_acc, 1)  # ACC板块（最底部）
+        plot_layout.addWidget(self.plot_w_acc, 2)  # ACC板块（高度增加）
 
         main_layout.addLayout(control_layout, 1)
         main_layout.addLayout(plot_layout, 5)
