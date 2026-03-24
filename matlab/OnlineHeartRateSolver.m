@@ -159,6 +159,65 @@ classdef OnlineHeartRateSolver < handle
             if size(accy_col, 2) > 1, accy_col = accy_col(:); end
             if size(accz_col, 2) > 1, accz_col = accz_col(:); end
 
+            % 【修复4】处理NaN和Inf值 - 防止filtfilt报错"输入应为有限"
+            % 使用线性插值替换NaN和Inf，保持数据连续性
+            if any(~isfinite(ppg_col))
+                valid_idx = isfinite(ppg_col);
+                if sum(valid_idx) > 1
+                    ppg_col(~valid_idx) = interp1(find(valid_idx), ppg_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    ppg_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(hotf1_col))
+                valid_idx = isfinite(hotf1_col);
+                if sum(valid_idx) > 1
+                    hotf1_col(~valid_idx) = interp1(find(valid_idx), hotf1_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    hotf1_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(hotf2_col))
+                valid_idx = isfinite(hotf2_col);
+                if sum(valid_idx) > 1
+                    hotf2_col(~valid_idx) = interp1(find(valid_idx), hotf2_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    hotf2_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(hotf3_col))
+                valid_idx = isfinite(hotf3_col);
+                if sum(valid_idx) > 1
+                    hotf3_col(~valid_idx) = interp1(find(valid_idx), hotf3_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    hotf3_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(accx_col))
+                valid_idx = isfinite(accx_col);
+                if sum(valid_idx) > 1
+                    accx_col(~valid_idx) = interp1(find(valid_idx), accx_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    accx_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(accy_col))
+                valid_idx = isfinite(accy_col);
+                if sum(valid_idx) > 1
+                    accy_col(~valid_idx) = interp1(find(valid_idx), accy_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    accy_col(~valid_idx) = 0;
+                end
+            end
+            if any(~isfinite(accz_col))
+                valid_idx = isfinite(accz_col);
+                if sum(valid_idx) > 1
+                    accz_col(~valid_idx) = interp1(find(valid_idx), accz_col(valid_idx), find(~valid_idx), 'linear', 'extrap');
+                else
+                    accz_col(~valid_idx) = 0;
+                end
+            end
+
             % 【修复2】恢复离群点剔除 - 消除微小抖动产生的毛刺
             ppg_col = filloutliers(ppg_col, 'previous', 'mean');
 
