@@ -15,8 +15,9 @@ function [e,w,ee]=lmsFunc_h(mu,M,K,u,d,w_init)
 % e = estimation error, dim Nx1    d(n)-y(n)
 % w = final filter coefficients, dim Mx1    最终的FIR系数
 
-u = zscore(u);
-d = zscore(d);
+% 使用安全版本的zscore，防止全常数数据导致NaN
+u = zscore_safe(u);
+d = zscore_safe(d);
 
 % =======================================================
 % 核心修改：动态阶数安全对齐机制
@@ -47,4 +48,30 @@ for n=M:N-K %Start at M (Filter Length) and Loop to N (Length of Sample)
     e(n)=d(n)-w'*uvec;
     w=w+2*mu*uvec*e(n);
     % y(n) = w'*uvec; %In ALE, this will be the narrowband noise.
+end
+
+end
+
+%% ====== 辅助函数 ======
+function z = zscore_safe(x)
+%ZSCORE_SAFE 安全的zscore标准化，防止全常数数据导致NaN
+% 当数据全为常数（标准差=0）时，返回零向量而非NaN
+%
+% Input:
+%   x - 输入信号
+% Output:
+%   z - 标准化后的信号
+
+x = x(:);  % 确保是列向量
+
+% 计算均值和标准差
+mu = mean(x);
+sigma = std(x);
+
+% 如果标准差为0或NaN（全常数数据），返回零向量
+if sigma == 0 || isnan(sigma) || isinf(sigma)
+    z = zeros(size(x));
+else
+    z = (x - mu) / sigma;
+end
 end
