@@ -18,18 +18,22 @@ function [e,w,ee]=lmsFunc_h(mu,M,K,u,d,w_init)
 u = zscore(u);
 d = zscore(d);
 
-% K = 0;
-% 如果传入了有效的 w_init 则继承，否则初始化为 0（支持跨窗口权重持久化）
-if nargin < 6 || isempty(w_init)
-    w=zeros(M+K,1); %This is a vertical column
-else
-    % 确保权重维度匹配（如果滤波器阶数变化则截断或补零）
-    if length(w_init) >= M+K
-        w = w_init(1:M+K);
-    else
-        w = [w_init; zeros(M+K-length(w_init), 1)];
-    end
+% =======================================================
+% 核心修改：动态阶数安全对齐机制
+% =======================================================
+target_len = M + K;               % 当前帧所需的标准滤波器长度
+w = zeros(target_len, 1);         % 预分配正确维度的零矩阵
+
+% 如果传入了历史权重，则进行安全继承
+if nargin >= 6 && ~isempty(w_init)
+    w_init = w_init(:);           % 确保输入为列向量
+    % 取当前所需长度与历史长度的最小值
+    copy_len = min(length(w_init), target_len);
+
+    % 安全赋值：若降阶则自动截断尾部，若升阶则尾部保持为 0
+    w(1:copy_len) = w_init(1:copy_len);
 end
+% =======================================================
 
 %input signal length
 N=length(u);
