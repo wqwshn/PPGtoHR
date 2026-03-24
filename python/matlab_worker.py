@@ -17,6 +17,7 @@ class MatlabWorkerThread(QThread):
     # 信号定义
     hr_ready = pyqtSignal(float, float, bool)  # HR_HF, HR_ACC, is_motion
     error_occurred = pyqtSignal(str)
+    fatal_error = pyqtSignal(str)  # 致命错误信号，用于关闭串口
     status_changed = pyqtSignal(str)
     calibration_status = pyqtSignal(bool, float, str)  # is_calibrated, progress_percent, message
 
@@ -111,19 +112,19 @@ class MatlabWorkerThread(QThread):
         para = self.eng.eval(
             "struct("
             "'Fs_Target',100,"
-            "'HR_Range_Hz',[0.67,3.0],"
-            "'Smooth_Win_Len',5,"
+            "'HR_Range_Hz',0.35,"     # 对应运动时允许 ±21 BPM 的追踪寻峰窗口
+            "'Smooth_Win_Len',3,"      # 缩短平滑队列提高快速性（原为5）
             "'Calib_Time',30,"
             "'Motion_Th_Scale',3,"
             "'Spec_Penalty_Enable',1,"
             "'Spec_Penalty_Weight',0.2,"
-            "'Spec_Penalty_Width',0.1,"
+            "'Spec_Penalty_Width',0.2," # 增加频谱惩罚容忍度（原为0.1）
             "'Max_Order',100,"
             "'Slew_Limit_BPM',20,"
             "'Slew_Step_BPM',10,"
             "'Slew_Limit_Rest',15,"
             "'Slew_Step_Rest',5,"
-            "'HR_Range_Rest',[0.67,3.0]"
+            "'HR_Range_Rest',0.15"     # 对应静息时允许 ±9 BPM 的追踪寻峰窗口
             ")"
         )
         return para
@@ -251,13 +252,15 @@ class MatlabWorkerThread(QThread):
             sys.stdout.write(f"[MATLAB] 计算超时 (次数: {self.timeout_count})\n")
             sys.stdout.flush()
             if self.timeout_count >= 3:
-                self.error_occurred.emit("MATLAB计算连续超时，尝试重启引擎")
-                self._restart_matlab_engine()
+                self.fatal_error.emit("MATLAB计算连续超时，关闭串口接收")
+                self.stop_calculation()  # 停止计算
             return
         except Exception as e:
             sys.stdout.write(f"[MATLAB] 计算异常: {str(e)}\n")
             sys.stdout.flush()
-            self.error_occurred.emit(f"MATLAB计算异常: {str(e)}")
+            # 发送致命错误信号，关闭串口接收
+            self.fatal_error.emit(f"MATLAB计算异常: {str(e)}")
+            self.stop_calculation()  # 停止计算
             return
 
         # 3. 解析结果并发送信号

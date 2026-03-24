@@ -25,6 +25,11 @@ classdef OnlineHeartRateSolver < handle
             else
                 warning('未找到 %s 参数文件，双路均将使用基础参数运行。', scenario_name);
             end
+
+            % 1.5 强制覆盖在线算法专用参数（防止离线优化参数影响实时性）
+            % Smooth_Win_Len: 离线优化值为5/7/9（非因果平滑），在线算法需用更小值减少延迟
+            obj.Para_HF.Smooth_Win_Len = 3;
+            obj.Para_ACC.Smooth_Win_Len = 3;
             
             % 2. 初始化全局状态 (基于 125Hz 原始输入)
             obj.State.Fs_Origin = 125; 
@@ -150,7 +155,10 @@ classdef OnlineHeartRateSolver < handle
             if size(accy_col, 2) > 1, accy_col = accy_col(:); end
             if size(accz_col, 2) > 1, accz_col = accz_col(:); end
 
-            % 直接重采样，不使用filloutliers（可能导致维度问题）
+            % 【修复2】恢复离群点剔除 - 消除微小抖动产生的毛刺
+            ppg_col = filloutliers(ppg_col, 'previous', 'mean');
+
+            % 重采样处理
             ppg_ori   = resample(ppg_col,   Fs, Fs_Ori);
             hotf1_ori = resample(hotf1_col, Fs, Fs_Ori);
             hotf2_ori = resample(hotf2_col, Fs, Fs_Ori);
@@ -259,7 +267,17 @@ classdef OnlineHeartRateSolver < handle
 
             % 加权融合：W->1 时完全使用 LMS，W->0 时完全使用 FFT
             Fusion_HR = W * Freq_LMS + (1 - W) * Freq_FFT;
-            
+
+            % 【修复3】交叉状态对齐，防止隐藏路径的轨迹漂移毒化
+            % 解决问题：静息态下LMS历史漂移到160 BPM，突然运动时切换输出导致跳变
+            if W > 0.8
+                % 强运动态：强迫 FFT 历史跟随 LMS，防止切回静息时突变
+                obj.State.(['Hist_FFT_' path_type]) = Freq_LMS;
+            elseif W < 0.2
+                % 强静息态：强迫 LMS 历史跟随 FFT，防止切入运动时突变到160
+                obj.State.(['Hist_LMS_' path_type]) = Freq_FFT;
+            end
+
             out.Fusion_HR = Fusion_HR;
             out.Is_Motion = is_motion;
         end
@@ -270,36 +288,36 @@ end
 function est_freq = Helper_Process_Spectrum(sig_in, sig_penalty_ref, Fs, para, times, prev_hr, enable_penalty, range_hz, limit_bpm, step_bpm)
     % 1. 频谱惩罚
     [S_rls, S_rls_amp] = FFT_Peaks(sig_in, Fs, 0.3);
-    
+
     if para.Spec_Penalty_Enable && enable_penalty
         [S_ref, S_ref_amp] = FFT_Peaks(sig_penalty_ref, Fs, 0.3);
         if ~isempty(S_ref)
-            [~, midx] = max(S_ref_amp); 
+            [~, midx] = max(S_ref_amp);
             Motion_Freq = S_ref(midx);
             mask = (abs(S_rls - Motion_Freq) < para.Spec_Penalty_Width) | ...
                    (abs(S_rls - 2*Motion_Freq) < para.Spec_Penalty_Width);
             S_rls_amp(mask) = S_rls_amp(mask) * para.Spec_Penalty_Weight;
         end
     end
-    
+
     % 2. 寻峰
     Fre = Find_maxpeak(S_rls, S_rls, S_rls_amp);
     if isempty(Fre), Fre = 0; end
     curr_raw = Fre(1);
-    
+
     % 3. 历史追踪
     if times == 1
         est_freq = curr_raw;
     else
-        % 定义就近寻峰的搜索半径标量 (例如 0.5Hz，相当于允许上下浮动 30 BPM)
-        % 修复原程序中将 range_hz 数组 [0.67, 3.0] 直接传入导致的 && 运算符崩溃
-        search_radius = 0.5; 
+        % 【修复1】使用参数传入的搜索半径（range_hz现在是标量）
+        % 不再使用硬编码的0.5，而是使用Python传入的正确值
+        search_radius = range_hz;
         [calc_hr, ~] = Find_nearBiggest(Fre, prev_hr, search_radius, -search_radius);
-        
+
         diff_hr = calc_hr - prev_hr;
         limit   = limit_bpm / 60;
-        step    = step_bpm / 60; 
-        
+        step    = step_bpm / 60;
+
         if diff_hr > limit
             est_freq = prev_hr + step;
         elseif diff_hr < -limit
@@ -308,18 +326,8 @@ function est_freq = Helper_Process_Spectrum(sig_in, sig_penalty_ref, Fs, para, t
             est_freq = calc_hr;
         end
     end
-    
+
     % 4. 绝对物理边界钳位 (防止追踪异常导致输出偏离生理极限)
-    % range_hz 可能是标量值 (如 0.6667) 或数组 (如 [0.67, 3.0])
-    % 兼容处理：如果是标量，使用默认范围 [0.67, 3.0]
-    if isscalar(range_hz)
-        % 标量值情况：使用标量值作为中心，或使用默认生理范围
-        min_hr = 0.67;  % 40 BPM
-        max_hr = 3.0;   % 180 BPM
-    else
-        % 数组情况：使用传入的范围
-        min_hr = range_hz(1);
-        max_hr = range_hz(2);
-    end
-    est_freq = min(max(est_freq, min_hr), max_hr);
+    % 使用默认生理范围 [0.67, 3.0] (40-180 BPM)
+    est_freq = min(max(est_freq, 0.67), 3.0);
 end
