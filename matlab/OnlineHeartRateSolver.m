@@ -56,6 +56,10 @@ classdef OnlineHeartRateSolver < handle
             % 独立平滑队列
             obj.State.Smooth_Queue_HF = [];
             obj.State.Smooth_Queue_ACC = [];
+
+            % LMS 级联权重持久化缓存（支持跨窗口增量式权重继承）
+            obj.State.W_HF_Cascade = {[], []};       % HF有2级级联
+            obj.State.W_ACC_Cascade = {[], [], []};  % ACC有3级级联
         end
         
         function [hr_results, is_ready] = process_step(obj, new_raw_data)
@@ -217,7 +221,10 @@ classdef OnlineHeartRateSolver < handle
                 for i = 1:2
                     curr_corr = mh_mat(i);
                     real_idx = find([mh1,mh2,mh3] == curr_corr, 1);
-                    [Sig_LMS,~,~] = lmsFunc_h(LMS_Mu_Base - curr_corr/100, ord, 0, Sig_h{real_idx}, Sig_LMS);
+                    % 传入上一帧保存的权重，并接收新权重（持久化优化）
+                    [Sig_LMS, new_w, ~] = lmsFunc_h(LMS_Mu_Base - curr_corr/100, ord, 0, Sig_h{real_idx}, Sig_LMS, obj.State.W_HF_Cascade{i});
+                    % 更新权重缓存
+                    obj.State.W_HF_Cascade{i} = new_w;
                 end
                 
                 Freq_LMS = Helper_Process_Spectrum(Sig_LMS, Sig_h{best_idx}, Fs, para, times, ...
@@ -234,9 +241,12 @@ classdef OnlineHeartRateSolver < handle
                 ma_mat = sort([ma1,ma2,ma3], 'descend');
                 for i = 1:3
                     curr_corr = ma_mat(i);
-                    real_idx = find([ma1,ma2,ma3] == curr_corr, 1); 
+                    real_idx = find([ma1,ma2,ma3] == curr_corr, 1);
                     Ref_Sig = Sig_a{real_idx};
-                    [Sig_LMS,~,~] = lmsFunc_h(LMS_Mu_Base - curr_corr/100, ord, 1, Ref_Sig, Sig_LMS);
+                    % 传入上一帧保存的权重，并接收新权重（持久化优化）
+                    [Sig_LMS, new_w, ~] = lmsFunc_h(LMS_Mu_Base - curr_corr/100, ord, 1, Ref_Sig, Sig_LMS, obj.State.W_ACC_Cascade{i});
+                    % 更新权重缓存
+                    obj.State.W_ACC_Cascade{i} = new_w;
                 end
                 
                 Freq_LMS = Helper_Process_Spectrum(Sig_LMS, Sig_a{3}, Fs, para, times, ...
